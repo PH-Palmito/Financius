@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 
+import { env, hasBackendConfig } from './src/config/env';
+
 type TabKey = 'dashboard' | 'carteira' | 'dividendos' | 'radar' | 'ia';
 
 type Position = {
@@ -171,9 +173,9 @@ const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }
   { key: 'ia', label: 'IA', icon: 'sparkles-outline' },
 ];
 
-const currency = new Intl.NumberFormat('pt-BR', {
+const currency = new Intl.NumberFormat(env.defaultLocale, {
   style: 'currency',
-  currency: 'BRL',
+  currency: env.defaultCurrency,
 });
 
 export default function App() {
@@ -251,8 +253,8 @@ function Header() {
   return (
     <View style={styles.header}>
       <View>
-        <Text style={styles.brand}>Financius</Text>
-        <Text style={styles.headerCopy}>Gestao de investimentos com IA</Text>
+        <Text style={styles.brand}>{env.appName}</Text>
+        <Text style={styles.headerCopy}>{env.appTagline}</Text>
       </View>
       <View style={styles.headerActions}>
         <Pressable accessibilityRole="button" style={styles.iconButton}>
@@ -520,6 +522,21 @@ function Opportunities() {
 }
 
 function Assistant() {
+  if (!env.aiAssistantEnabled) {
+    return (
+      <View style={styles.aiPanel}>
+        <View style={styles.aiIconMuted}>
+          <Ionicons color="#657487" name="lock-closed-outline" size={24} />
+        </View>
+        <Text style={styles.aiTitle}>Assistente desativado</Text>
+        <Text style={styles.aiText}>
+          Ative EXPO_PUBLIC_AI_ASSISTANT_ENABLED quando o backend com guardrails estiver
+          configurado. Chaves privadas de IA devem ficar apenas no servidor.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <>
       <View style={styles.aiPanel}>
@@ -531,6 +548,18 @@ function Assistant() {
           Sua carteira esta positiva no ano, mas ha concentracao acima do limite no setor
           financeiro. Este painel oferece apoio educacional e nao substitui analise propria.
         </Text>
+        <View style={styles.configNotice}>
+          <Ionicons
+            color={hasBackendConfig ? '#0E7A4F' : '#9A5A04'}
+            name={hasBackendConfig ? 'checkmark-circle-outline' : 'alert-circle-outline'}
+            size={17}
+          />
+          <Text style={styles.configNoticeText}>
+            {hasBackendConfig
+              ? 'Backend configurado por variaveis de ambiente.'
+              : 'Configure API/Supabase no .env para conectar dados reais.'}
+          </Text>
+        </View>
       </View>
 
       <SectionTitle title="Perguntas rapidas" />
@@ -1396,6 +1425,15 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     width: 48,
   },
+  aiIconMuted: {
+    alignItems: 'center',
+    backgroundColor: '#F0F4F8',
+    borderRadius: 8,
+    height: 48,
+    justifyContent: 'center',
+    marginBottom: 14,
+    width: 48,
+  },
   aiTitle: {
     color: '#172434',
     fontSize: 22,
@@ -1406,6 +1444,24 @@ const styles = StyleSheet.create({
     color: '#34495E',
     fontSize: 14,
     lineHeight: 21,
+  },
+  configNotice: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+    padding: 10,
+  },
+  configNoticeText: {
+    color: '#657487',
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 17,
   },
   questionButton: {
     alignItems: 'center',
