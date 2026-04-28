@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Financius",
-    "slug": "Financius",
+    "slug": "financius",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
