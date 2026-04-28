@@ -1,169 +1,46 @@
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
 import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 
 import { env, hasBackendConfig } from './src/config/env';
+import {
+  alerts,
+  allocation,
+  benchmarkHistory,
+  dividendHistory,
+  dividends,
+  equityHistory,
+  news,
+  positions,
+  transactions as initialTransactions,
+} from './src/data/mock';
+import { calculateAveragePrice, groupTransactionsByTicker } from './src/domain/portfolio';
+import type {
+  AllocationSlice,
+  ChartPoint,
+  Dividend,
+  Position,
+  Transaction,
+} from './src/domain/types';
+import {
+  clearStoredPortfolio,
+  loadStoredPortfolio,
+  saveStoredAssets,
+  saveStoredTransactions,
+} from './src/storage/portfolioStorage';
 
 type TabKey = 'dashboard' | 'carteira' | 'dividendos' | 'radar' | 'ia';
-
-type Position = {
-  ticker: string;
-  name: string;
-  type: string;
-  sector: string;
-  allocation: number;
-  quantity: number;
-  averagePrice: number;
-  currentPrice: number;
-  ceilingPrice: number;
-  fairPrice: number;
-};
-
-type Dividend = {
-  ticker: string;
-  sector: string;
-  amount: number;
-  yieldOnCost: number;
-  lastPayment: string;
-};
-
-const positions: Position[] = [
-  {
-    ticker: 'ITSA4',
-    name: 'Itausa',
-    type: 'Acao',
-    sector: 'Financeiro',
-    allocation: 18.4,
-    quantity: 620,
-    averagePrice: 8.72,
-    currentPrice: 10.18,
-    ceilingPrice: 10.8,
-    fairPrice: 12.4,
-  },
-  {
-    ticker: 'HGLG11',
-    name: 'CSHG Logistica',
-    type: 'FII',
-    sector: 'Logistica',
-    allocation: 15.2,
-    quantity: 48,
-    averagePrice: 151.2,
-    currentPrice: 164.6,
-    ceilingPrice: 158.0,
-    fairPrice: 171.0,
-  },
-  {
-    ticker: 'BOVA11',
-    name: 'ETF Ibovespa',
-    type: 'ETF',
-    sector: 'Indice',
-    allocation: 12.8,
-    quantity: 56,
-    averagePrice: 111.4,
-    currentPrice: 126.9,
-    ceilingPrice: 121.0,
-    fairPrice: 130.0,
-  },
-  {
-    ticker: 'TESOURO IPCA+',
-    name: 'Venc. 2035',
-    type: 'Renda fixa',
-    sector: 'Renda fixa',
-    allocation: 24.5,
-    quantity: 1,
-    averagePrice: 11420,
-    currentPrice: 11980,
-    ceilingPrice: 0,
-    fairPrice: 0,
-  },
-];
-
-const allocation = [
-  { label: 'Renda fixa', value: 31, color: '#2F6F73' },
-  { label: 'Acoes', value: 29, color: '#2868E8' },
-  { label: 'FIIs', value: 21, color: '#C9821D' },
-  { label: 'ETFs', value: 13, color: '#6F5BD7' },
-  { label: 'Caixa', value: 6, color: '#6C7A89' },
-];
-
-const equityHistory = [
-  { label: 'Jan', value: 28400 },
-  { label: 'Fev', value: 29680 },
-  { label: 'Mar', value: 29140 },
-  { label: 'Abr', value: 31420 },
-  { label: 'Mai', value: 33280 },
-  { label: 'Jun', value: 34860 },
-  { label: 'Jul', value: 36120 },
-  { label: 'Ago', value: 37940 },
-];
-
-const benchmarkHistory = [
-  { label: 'Jan', value: 28400 },
-  { label: 'Fev', value: 29110 },
-  { label: 'Mar', value: 28790 },
-  { label: 'Abr', value: 30020 },
-  { label: 'Mai', value: 31200 },
-  { label: 'Jun', value: 31990 },
-  { label: 'Jul', value: 32640 },
-  { label: 'Ago', value: 33480 },
-];
-
-const dividends: Dividend[] = [
-  { ticker: 'HGLG11', sector: 'Logistica', amount: 172.8, yieldOnCost: 8.9, lastPayment: '15/08' },
-  { ticker: 'ITSA4', sector: 'Financeiro', amount: 148.42, yieldOnCost: 7.2, lastPayment: '01/08' },
-  { ticker: 'MXRF11', sector: 'Papel', amount: 92.7, yieldOnCost: 11.4, lastPayment: '14/08' },
-  { ticker: 'TAEE11', sector: 'Energia', amount: 88.3, yieldOnCost: 9.1, lastPayment: '28/07' },
-  { ticker: 'BOVA11', sector: 'Indice', amount: 34.6, yieldOnCost: 2.3, lastPayment: '30/07' },
-];
-
-const dividendHistory = [
-  { label: 'Jan', value: 264 },
-  { label: 'Fev', value: 318 },
-  { label: 'Mar', value: 286 },
-  { label: 'Abr', value: 402 },
-  { label: 'Mai', value: 438 },
-  { label: 'Jun', value: 461 },
-  { label: 'Jul', value: 512 },
-  { label: 'Ago', value: 536 },
-];
-
-const alerts: {
-  icon: keyof typeof Ionicons.glyphMap;
-  title: string;
-  text: string;
-}[] = [
-  {
-    icon: 'warning-outline',
-    title: 'Concentracao em financeiro',
-    text: 'Financeiro representa 34% da carteira. Seu limite configurado e 30%.',
-  },
-  {
-    icon: 'cash-outline',
-    title: 'Renda mensal subindo',
-    text: 'Dividendos dos ultimos 3 meses cresceram 18% contra o trimestre anterior.',
-  },
-  {
-    icon: 'newspaper-outline',
-    title: 'Noticia relevante em bancos',
-    text: 'Aumento de inadimplencia pode pressionar lucro e dividendos futuros.',
-  },
-];
-
-const news = [
-  'Resultado trimestral de bancos veio misto, com pressao em provisoes.',
-  'FIIs logisticos mantem vacancia controlada nos principais mercados.',
-  'Juros futuros recuam e favorecem marcacao de renda fixa prefixada.',
-];
 
 const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'dashboard', label: 'Inicio', icon: 'grid-outline' },
@@ -180,13 +57,69 @@ const currency = new Intl.NumberFormat(env.defaultLocale, {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
+  const [portfolioAssets, setPortfolioAssets] = useState(positions);
+  const [portfolioTransactions, setPortfolioTransactions] = useState(initialTransactions);
+  const [storageReady, setStorageReady] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    loadStoredPortfolio()
+      .then((stored) => {
+        if (!mounted) {
+          return;
+        }
+
+        if (stored.assets?.length) {
+          setPortfolioAssets(stored.assets);
+        }
+
+        if (stored.transactions?.length) {
+          setPortfolioTransactions(stored.transactions);
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setStorageReady(true);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (storageReady) {
+      saveStoredAssets(portfolioAssets);
+    }
+  }, [portfolioAssets, storageReady]);
+
+  useEffect(() => {
+    if (storageReady) {
+      saveStoredTransactions(portfolioTransactions);
+    }
+  }, [portfolioTransactions, storageReady]);
+
+  const portfolioPositions = useMemo(() => {
+    const transactionsByTicker = groupTransactionsByTicker(portfolioTransactions);
+
+    return portfolioAssets.map((position) => {
+      const calculated = calculateAveragePrice(transactionsByTicker[position.ticker] || []);
+      return {
+        ...position,
+        quantity: calculated.quantity,
+        averagePrice: calculated.averagePrice || position.averagePrice,
+      };
+    });
+  }, [portfolioAssets, portfolioTransactions]);
 
   const totals = useMemo(() => {
-    const invested = positions.reduce(
+    const invested = portfolioPositions.reduce(
       (sum, position) => sum + position.quantity * position.averagePrice,
       0,
     );
-    const current = positions.reduce(
+    const current = portfolioPositions.reduce(
       (sum, position) => sum + position.quantity * position.currentPrice,
       0,
     );
@@ -197,15 +130,21 @@ export default function App() {
       current,
       dividendsTotal,
       profit: current - invested,
-      performance: ((current - invested) / invested) * 100,
+      performance: invested > 0 ? ((current - invested) / invested) * 100 : 0,
     };
-  }, []);
+  }, [portfolioPositions]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
       <View style={styles.shell}>
         <Header />
+        {!storageReady ? (
+          <View style={styles.storageBanner}>
+            <Ionicons color="#657487" name="sync-outline" size={16} />
+            <Text style={styles.storageBannerText}>Carregando carteira local...</Text>
+          </View>
+        ) : null}
         <View style={styles.tabsWrap}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={styles.tabs}>
@@ -239,9 +178,28 @@ export default function App() {
           showsVerticalScrollIndicator={false}
         >
           {activeTab === 'dashboard' && <Dashboard totals={totals} />}
-          {activeTab === 'carteira' && <Portfolio />}
+          {activeTab === 'carteira' && (
+            <Portfolio
+              onAddAsset={(asset) =>
+                setPortfolioAssets((current) => [
+                  ...current.filter((item) => item.ticker !== asset.ticker),
+                  asset,
+                ])
+              }
+              onAddTransaction={(transaction) =>
+                setPortfolioTransactions((current) => [transaction, ...current])
+              }
+              onResetPortfolio={() => {
+                setPortfolioAssets(positions);
+                setPortfolioTransactions(initialTransactions);
+                clearStoredPortfolio();
+              }}
+              positions={portfolioPositions}
+              transactions={portfolioTransactions}
+            />
+          )}
           {activeTab === 'dividendos' && <Dividends />}
-          {activeTab === 'radar' && <Opportunities />}
+          {activeTab === 'radar' && <Opportunities positions={portfolioPositions} />}
           {activeTab === 'ia' && <Assistant />}
         </ScrollView>
       </View>
@@ -335,10 +293,42 @@ function Dashboard({
   );
 }
 
-function Portfolio() {
+function Portfolio({
+  positions,
+  onAddAsset,
+  onResetPortfolio,
+  transactions,
+  onAddTransaction,
+}: {
+  positions: Position[];
+  onAddAsset: (asset: Position) => void;
+  onResetPortfolio: () => void;
+  transactions: Transaction[];
+  onAddTransaction: (transaction: Transaction) => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const recentTransactions = [...transactions]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 5);
+
   return (
     <>
-      <SectionTitle title="Posicoes" action="Adicionar" />
+      <SectionTitle
+        action={showForm ? 'Fechar' : 'Adicionar'}
+        onActionPress={() => setShowForm((current) => !current)}
+        title="Posicoes"
+      />
+      {showForm ? (
+        <TransactionForm
+          onCancel={() => setShowForm(false)}
+          onCreateAsset={onAddAsset}
+          positions={positions}
+          onSubmit={(transaction) => {
+            onAddTransaction(transaction);
+            setShowForm(false);
+          }}
+        />
+      ) : null}
       {positions.map((position) => (
         <View key={position.ticker} style={styles.positionCard}>
           <View style={styles.positionHeader}>
@@ -347,7 +337,9 @@ function Portfolio() {
               <Text style={styles.muted}>{position.name}</Text>
             </View>
             <View style={styles.assetPill}>
-              <Text style={styles.assetPillText}>{position.type}</Text>
+              <Text style={styles.assetPillText}>
+                {position.quantity > 0 ? position.type : 'Sem posicao'}
+              </Text>
             </View>
           </View>
           <View style={styles.positionStats}>
@@ -359,8 +351,44 @@ function Portfolio() {
             <Text style={styles.muted}>Margem de seguranca</Text>
             <Text style={styles.securityValue}>{getSafetyMargin(position)}</Text>
           </View>
+          <View style={styles.positionValueLine}>
+            <View>
+              <Text style={styles.muted}>Valor atual</Text>
+              <Text style={styles.positionValue}>
+                {currency.format(position.quantity * position.currentPrice)}
+              </Text>
+            </View>
+            <View style={styles.positionResultBlock}>
+              <Text style={styles.muted}>Resultado</Text>
+              <Text
+                style={[
+                  styles.positionResult,
+                  getPositionProfit(position) < 0 && styles.negativeText,
+                ]}
+              >
+                {currency.format(getPositionProfit(position))}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.averageLine}>
+            <Text style={styles.muted}>Preco medio calculado por lancamentos</Text>
+            <Text style={styles.averageValue}>{currency.format(position.averagePrice)}</Text>
+          </View>
         </View>
       ))}
+
+      <SectionTitle title="Ultimos lancamentos" action={`${transactions.length} total`} />
+      {recentTransactions.map((transaction) => (
+        <TransactionRow key={transaction.id} transaction={transaction} />
+      ))}
+      <Pressable
+        accessibilityRole="button"
+        onPress={onResetPortfolio}
+        style={styles.resetButton}
+      >
+        <Ionicons color="#B64242" name="refresh-outline" size={17} />
+        <Text style={styles.resetButtonText}>Restaurar carteira de exemplo</Text>
+      </Pressable>
     </>
   );
 }
@@ -465,7 +493,7 @@ function Dividends() {
   );
 }
 
-function Opportunities() {
+function Opportunities({ positions }: { positions: Position[] }) {
   const belowCeiling = positions.filter(
     (position) => position.ceilingPrice > 0 && position.currentPrice <= position.ceilingPrice,
   );
@@ -599,11 +627,27 @@ function Metric({
   );
 }
 
-function SectionTitle({ title, action }: { title: string; action?: string }) {
+function SectionTitle({
+  title,
+  action,
+  onActionPress,
+}: {
+  title: string;
+  action?: string;
+  onActionPress?: () => void;
+}) {
   return (
     <View style={styles.sectionTitle}>
       <Text style={styles.sectionHeading}>{title}</Text>
-      {action ? <Text style={styles.sectionAction}>{action}</Text> : null}
+      {action ? (
+        <Pressable
+          accessibilityRole={onActionPress ? 'button' : undefined}
+          disabled={!onActionPress}
+          onPress={onActionPress}
+        >
+          <Text style={styles.sectionAction}>{action}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -653,6 +697,288 @@ function AlertCard({
   );
 }
 
+function TransactionForm({
+  onCancel,
+  positions,
+  onSubmit,
+}: {
+  onCancel: () => void;
+  positions: Position[];
+  onSubmit: (transaction: Transaction) => void;
+}) {
+  const [ticker, setTicker] = useState(positions[0].ticker);
+  const [type, setType] = useState<Transaction['type']>('buy');
+  const [quantity, setQuantity] = useState('');
+  const [price, setPrice] = useState('');
+  const [fees, setFees] = useState('0');
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+
+  const quantityValue = parseNumber(quantity);
+  const priceValue = parseNumber(price);
+  const feesValue = parseNumber(fees);
+  const canSubmit =
+    quantityValue > 0 && priceValue > 0 && feesValue >= 0 && isValidDateInput(date);
+
+  return (
+    <View style={styles.formCard}>
+      <View style={styles.segmented}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setType('buy')}
+          style={[styles.segmentButton, type === 'buy' && styles.segmentActive]}
+        >
+          <Text style={[styles.segmentText, type === 'buy' && styles.segmentTextActive]}>
+            Compra
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setType('sell')}
+          style={[styles.segmentButton, type === 'sell' && styles.segmentActive]}
+        >
+          <Text style={[styles.segmentText, type === 'sell' && styles.segmentTextActive]}>
+            Venda
+          </Text>
+        </Pressable>
+      </View>
+
+      <Text style={styles.inputLabel}>Ativo</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View style={styles.filterChips}>
+          {positions.map((position) => {
+            const selected = ticker === position.ticker;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                key={position.ticker}
+                onPress={() => setTicker(position.ticker)}
+                style={[styles.filterChip, selected && styles.filterChipActive]}
+              >
+                <Text style={[styles.filterChipText, selected && styles.filterChipTextActive]}>
+                  {position.ticker}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      <View style={styles.formGrid}>
+        <Field
+          label="Quantidade"
+          onChangeText={setQuantity}
+          placeholder="100"
+          value={quantity}
+        />
+        <Field
+          label="Preco"
+          onChangeText={setPrice}
+          placeholder="10,50"
+          value={price}
+        />
+        <Field label="Taxas" onChangeText={setFees} placeholder="0,00" value={fees} />
+      </View>
+      <Field
+        inputMode="numeric"
+        label="Data"
+        onChangeText={setDate}
+        placeholder="2026-04-28"
+        value={date}
+      />
+
+      <View style={styles.formSummary}>
+        <Text style={styles.muted}>Total estimado</Text>
+        <Text style={styles.formSummaryValue}>
+          {currency.format(quantityValue * priceValue + feesValue)}
+        </Text>
+      </View>
+
+      <View style={styles.formActions}>
+        <Pressable accessibilityRole="button" onPress={onCancel} style={styles.secondaryButton}>
+          <Text style={styles.secondaryButtonText}>Cancelar</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!canSubmit}
+          onPress={() =>
+            onSubmit({
+              id: `trx-${Date.now()}`,
+              ticker,
+              type,
+              quantity: quantityValue,
+              price: priceValue,
+              fees: feesValue,
+              date,
+            })
+          }
+          style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
+        >
+          <Text style={styles.primaryButtonText}>Salvar</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function AssetForm({
+  onCancel,
+  onSubmit,
+}: {
+  onCancel: () => void;
+  onSubmit: (asset: Position) => void;
+}) {
+  const [ticker, setTicker] = useState('');
+  const [name, setName] = useState('');
+  const [assetType, setAssetType] = useState<Position['type']>('Acao');
+  const [sector, setSector] = useState('');
+  const [currentPrice, setCurrentPrice] = useState('');
+  const [ceilingPrice, setCeilingPrice] = useState('');
+  const [fairPrice, setFairPrice] = useState('');
+
+  const currentPriceValue = parseNumber(currentPrice);
+  const ceilingPriceValue = parseNumber(ceilingPrice);
+  const fairPriceValue = parseNumber(fairPrice);
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const canSubmit =
+    normalizedTicker.length >= 3 &&
+    name.trim().length >= 2 &&
+    sector.trim().length >= 2 &&
+    currentPriceValue > 0;
+
+  return (
+    <View style={styles.formCard}>
+      <Text style={styles.formTitle}>Novo ativo</Text>
+      <View style={styles.formGrid}>
+        <Field
+          inputMode="text"
+          label="Ticker"
+          onChangeText={setTicker}
+          placeholder="PETR4"
+          value={ticker}
+        />
+        <Field
+          inputMode="text"
+          label="Nome"
+          onChangeText={setName}
+          placeholder="Petrobras"
+          value={name}
+        />
+      </View>
+
+      <Text style={styles.inputLabel}>Classe</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View style={styles.filterChips}>
+          {(['Acao', 'FII', 'ETF', 'Renda fixa'] as Position['type'][]).map((type) => {
+            const selected = assetType === type;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                key={type}
+                onPress={() => setAssetType(type)}
+                style={[styles.filterChip, selected && styles.filterChipActive]}
+              >
+                <Text style={[styles.filterChipText, selected && styles.filterChipTextActive]}>
+                  {type}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      <Field
+        inputMode="text"
+        label="Setor"
+        onChangeText={setSector}
+        placeholder="Energia"
+        value={sector}
+      />
+
+      <View style={styles.formGrid}>
+        <Field
+          label="Cotacao"
+          onChangeText={setCurrentPrice}
+          placeholder="32,10"
+          value={currentPrice}
+        />
+        <Field
+          label="Preco teto"
+          onChangeText={setCeilingPrice}
+          placeholder="30,00"
+          value={ceilingPrice}
+        />
+        <Field
+          label="Preco justo"
+          onChangeText={setFairPrice}
+          placeholder="36,00"
+          value={fairPrice}
+        />
+      </View>
+
+      <View style={styles.formSummary}>
+        <Text style={styles.muted}>Ativo sera criado sem quantidade</Text>
+        <Text style={styles.formSummaryValue}>{normalizedTicker || '-'}</Text>
+      </View>
+
+      <View style={styles.formActions}>
+        <Pressable accessibilityRole="button" onPress={onCancel} style={styles.secondaryButton}>
+          <Text style={styles.secondaryButtonText}>Cancelar</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!canSubmit}
+          onPress={() =>
+            onSubmit({
+              ticker: normalizedTicker,
+              name: name.trim(),
+              type: assetType,
+              sector: sector.trim(),
+              allocation: 0,
+              quantity: 0,
+              averagePrice: 0,
+              currentPrice: currentPriceValue,
+              ceilingPrice: ceilingPriceValue,
+              fairPrice: fairPriceValue,
+            })
+          }
+          style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
+        >
+          <Text style={styles.primaryButtonText}>Criar ativo</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function Field({
+  label,
+  value,
+  placeholder,
+  inputMode = 'decimal',
+  onChangeText,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  inputMode?: 'decimal' | 'numeric' | 'text';
+  onChangeText: (value: string) => void;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.inputLabel}>{label}</Text>
+      <TextInput
+        inputMode={inputMode}
+        keyboardType={inputMode === 'text' ? 'default' : 'decimal-pad'}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#94A3B8"
+        style={styles.input}
+        value={value}
+      />
+    </View>
+  );
+}
+
 function DividendRow({ item, rank }: { item: Dividend; rank: number }) {
   return (
     <View style={styles.dividendRow}>
@@ -662,12 +988,40 @@ function DividendRow({ item, rank }: { item: Dividend; rank: number }) {
       <View style={styles.dividendInfo}>
         <Text style={styles.rowTitle}>{item.ticker}</Text>
         <Text style={styles.muted}>
-          {item.sector} · pago em {item.lastPayment}
+          {item.sector} - pago em {item.lastPayment}
         </Text>
       </View>
       <View style={styles.dividendValueBlock}>
         <Text style={styles.dividendAmount}>{currency.format(item.amount)}</Text>
         <Text style={styles.dividendYield}>{item.yieldOnCost.toFixed(1)}% a.a.</Text>
+      </View>
+    </View>
+  );
+}
+
+function TransactionRow({ transaction }: { transaction: Transaction }) {
+  const isBuy = transaction.type === 'buy';
+
+  return (
+    <View style={styles.transactionRow}>
+      <View style={[styles.transactionIcon, isBuy ? styles.buyIcon : styles.sellIcon]}>
+        <Ionicons
+          color={isBuy ? '#0E7A4F' : '#B64242'}
+          name={isBuy ? 'arrow-down-outline' : 'arrow-up-outline'}
+          size={18}
+        />
+      </View>
+      <View style={styles.transactionInfo}>
+        <Text style={styles.rowTitle}>{transaction.ticker}</Text>
+        <Text style={styles.muted}>
+          {isBuy ? 'Compra' : 'Venda'} - {transaction.quantity} un. - {formatDate(transaction.date)}
+        </Text>
+      </View>
+      <View style={styles.transactionValueBlock}>
+        <Text style={styles.transactionAmount}>
+          {currency.format(transaction.quantity * transaction.price + transaction.fees)}
+        </Text>
+        <Text style={styles.transactionFees}>taxas {currency.format(transaction.fees)}</Text>
       </View>
     </View>
   );
@@ -939,6 +1293,26 @@ function ChartLegend({ color, label }: { color: string; label: string }) {
   );
 }
 
+function parseNumber(value: string) {
+  const normalized = value.replace(',', '.').trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isValidDateInput(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const parsed = new Date(`${value}T00:00:00`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function formatDate(value: string) {
+  const [year, month, day] = value.split('-');
+  return `${day}/${month}/${year}`;
+}
+
 function getSafetyMargin(position: Position) {
   if (!position.fairPrice) {
     return 'Nao se aplica';
@@ -946,6 +1320,10 @@ function getSafetyMargin(position: Position) {
 
   const margin = ((position.fairPrice - position.currentPrice) / position.fairPrice) * 100;
   return `${margin.toFixed(1)}%`;
+}
+
+function getPositionProfit(position: Position) {
+  return position.quantity * (position.currentPrice - position.averagePrice);
 }
 
 const styles = StyleSheet.create({
@@ -1000,6 +1378,21 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     paddingHorizontal: 14,
     paddingTop: 10,
+  },
+  storageBanner: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderBottomColor: '#E1E8F0',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+  },
+  storageBannerText: {
+    color: '#657487',
+    fontSize: 12,
+    fontWeight: '800',
   },
   tabs: {
     flexDirection: 'row',
@@ -1111,6 +1504,9 @@ const styles = StyleSheet.create({
   },
   positiveText: {
     color: '#0E7A4F',
+  },
+  negativeText: {
+    color: '#B64242',
   },
   sectionTitle: {
     alignItems: 'center',
@@ -1253,6 +1649,35 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     padding: 14,
   },
+  quickActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  quickActionButton: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D7E0EA',
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 42,
+  },
+  quickActionActive: {
+    backgroundColor: '#2868E8',
+    borderColor: '#2868E8',
+  },
+  quickActionText: {
+    color: '#2868E8',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  quickActionTextActive: {
+    color: '#FFFFFF',
+  },
   positionHeader: {
     alignItems: 'flex-start',
     flexDirection: 'row',
@@ -1297,6 +1722,44 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
   },
+  positionValueLine: {
+    alignItems: 'center',
+    borderTopColor: '#E1E8F0',
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 12,
+  },
+  positionValue: {
+    color: '#172434',
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 3,
+  },
+  positionResultBlock: {
+    alignItems: 'flex-end',
+  },
+  positionResult: {
+    color: '#0E7A4F',
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 3,
+  },
+  averageLine: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    padding: 10,
+  },
+  averageValue: {
+    color: '#2868E8',
+    fontSize: 13,
+    fontWeight: '900',
+  },
   segmented: {
     backgroundColor: '#F0F4F8',
     borderRadius: 8,
@@ -1321,6 +1784,95 @@ const styles = StyleSheet.create({
   },
   segmentTextActive: {
     color: '#172434',
+  },
+  formCard: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D7E0EA',
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 14,
+  },
+  formTitle: {
+    color: '#172434',
+    fontSize: 16,
+    fontWeight: '900',
+    marginBottom: 2,
+  },
+  inputLabel: {
+    color: '#657487',
+    fontSize: 12,
+    fontWeight: '900',
+    marginBottom: 7,
+    marginTop: 12,
+  },
+  formGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 2,
+  },
+  field: {
+    flex: 1,
+  },
+  input: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    color: '#172434',
+    fontSize: 14,
+    fontWeight: '800',
+    minHeight: 44,
+    paddingHorizontal: 10,
+  },
+  formSummary: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    padding: 10,
+  },
+  formSummaryValue: {
+    color: '#172434',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  formActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  secondaryButton: {
+    alignItems: 'center',
+    borderColor: '#D7E0EA',
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  secondaryButtonText: {
+    color: '#657487',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  primaryButton: {
+    alignItems: 'center',
+    backgroundColor: '#2868E8',
+    borderRadius: 8,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  primaryButtonDisabled: {
+    backgroundColor: '#AFC4EF',
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
   },
   filterChips: {
     flexDirection: 'row',
@@ -1388,6 +1940,63 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '900',
     marginTop: 4,
+  },
+  transactionRow: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 10,
+    padding: 14,
+  },
+  transactionIcon: {
+    alignItems: 'center',
+    borderRadius: 8,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  buyIcon: {
+    backgroundColor: '#E8F6EF',
+  },
+  sellIcon: {
+    backgroundColor: '#FCEBEB',
+  },
+  transactionInfo: {
+    flex: 1,
+    gap: 3,
+  },
+  transactionValueBlock: {
+    alignItems: 'flex-end',
+  },
+  transactionAmount: {
+    color: '#172434',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  transactionFees: {
+    color: '#657487',
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  resetButton: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    marginTop: 8,
+    minHeight: 40,
+    paddingHorizontal: 12,
+  },
+  resetButtonText: {
+    color: '#B64242',
+    fontSize: 12,
+    fontWeight: '900',
   },
   opportunityRow: {
     borderTopColor: '#EDF1F6',

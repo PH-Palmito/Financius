@@ -12,6 +12,7 @@ Current modules:
 - Allocation chart by asset class.
 - Equity evolution chart compared with a benchmark.
 - Portfolio positions with average price, current price, and safety margin.
+- Transaction history with average price calculation.
 - Dividends area with monthly evolution, sector filters, top payers, and yield ranking.
 - Opportunity radar for target price and fair value checks.
 - AI assistant placeholder with educational wording and backend configuration awareness.
@@ -129,8 +130,13 @@ These server-only values are intentionally not prefixed with `EXPO_PUBLIC_`.
 ├── App.tsx
 ├── app.config.js
 ├── src
-│   └── config
-│       └── env.ts
+│   ├── config
+│   │   └── env.ts
+│   ├── data
+│   │   └── mock.ts
+│   └── domain
+│       ├── portfolio.ts
+│       └── types.ts
 ├── assets
 ├── package.json
 └── .env.example
