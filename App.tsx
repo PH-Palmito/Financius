@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import type { Session } from '@supabase/supabase-js';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -14,6 +15,7 @@ import {
 import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 
 import { env, hasBackendConfig } from './src/config/env';
+import { searchAssetCatalog } from './src/data/assetCatalog';
 import {
   alerts,
   allocation,
@@ -26,6 +28,8 @@ import {
   transactions as initialTransactions,
 } from './src/data/mock';
 import { calculateAveragePrice, groupTransactionsByTicker } from './src/domain/portfolio';
+import { loadCloudPortfolio, saveCloudPortfolio } from './src/services/portfolioCloud';
+import { isSupabaseConfigured, supabase } from './src/services/supabase';
 import type {
   AllocationSlice,
   ChartPoint,
@@ -40,12 +44,13 @@ import {
   saveStoredTransactions,
 } from './src/storage/portfolioStorage';
 
-type TabKey = 'dashboard' | 'carteira' | 'dividendos' | 'radar' | 'ia';
+type TabKey = 'dashboard' | 'carteira' | 'dividendos' | 'metas' | 'radar' | 'ia';
 
 const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'dashboard', label: 'Inicio', icon: 'grid-outline' },
   { key: 'carteira', label: 'Carteira', icon: 'wallet-outline' },
   { key: 'dividendos', label: 'Dividendos', icon: 'cash-outline' },
+  { key: 'metas', label: 'Metas', icon: 'flag-outline' },
   { key: 'radar', label: 'Radar', icon: 'scan-outline' },
   { key: 'ia', label: 'IA', icon: 'sparkles-outline' },
 ];
@@ -60,6 +65,9 @@ export default function App() {
   const [portfolioAssets, setPortfolioAssets] = useState(positions);
   const [portfolioTransactions, setPortfolioTransactions] = useState(initialTransactions);
   const [storageReady, setStorageReady] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [syncStatus, setSyncStatus] = useState('Carteira local');
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -90,6 +98,47 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!supabase) {
+      return undefined;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady || !session?.user.id) {
+      return;
+    }
+
+    setSyncing(true);
+    setSyncStatus('Sincronizando carteira...');
+    loadCloudPortfolio(session.user.id)
+      .then((cloudPortfolio) => {
+        if (cloudPortfolio?.assets.length) {
+          setPortfolioAssets(cloudPortfolio.assets);
+        }
+
+        if (cloudPortfolio?.transactions.length) {
+          setPortfolioTransactions(cloudPortfolio.transactions);
+        }
+
+        setSyncStatus(cloudPortfolio ? 'Carteira sincronizada' : 'Carteira local pronta');
+      })
+      .catch(() => setSyncStatus('Falha ao sincronizar'))
+      .finally(() => setSyncing(false));
+  }, [session?.user.id, storageReady]);
+
+  useEffect(() => {
     if (storageReady) {
       saveStoredAssets(portfolioAssets);
     }
@@ -100,6 +149,26 @@ export default function App() {
       saveStoredTransactions(portfolioTransactions);
     }
   }, [portfolioTransactions, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || !session?.user.id) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      setSyncing(true);
+      setSyncStatus('Salvando na nuvem...');
+      saveCloudPortfolio(session.user.id, {
+        assets: portfolioAssets,
+        transactions: portfolioTransactions,
+      })
+        .then(() => setSyncStatus('Carteira sincronizada'))
+        .catch(() => setSyncStatus('Falha ao salvar na nuvem'))
+        .finally(() => setSyncing(false));
+    }, 600);
+
+    return () => clearTimeout(timeout);
+  }, [portfolioAssets, portfolioTransactions, session?.user.id, storageReady]);
 
   const portfolioPositions = useMemo(() => {
     const transactionsByTicker = groupTransactionsByTicker(portfolioTransactions);
@@ -134,11 +203,82 @@ export default function App() {
     };
   }, [portfolioPositions]);
 
+  const portfolioAllocation = useMemo(
+    () => buildAllocationFromPositions(portfolioPositions),
+    [portfolioPositions],
+  );
+
+  const saveNow = () => {
+    if (!session?.user.id) {
+      return;
+    }
+
+    setSyncing(true);
+    setSyncStatus('Salvando na nuvem...');
+    saveCloudPortfolio(session.user.id, {
+      assets: portfolioAssets,
+      transactions: portfolioTransactions,
+    })
+      .then(() => setSyncStatus('Carteira sincronizada'))
+      .catch(() => setSyncStatus('Falha ao salvar na nuvem'))
+      .finally(() => setSyncing(false));
+  };
+
+  const pullNow = () => {
+    if (!session?.user.id) {
+      return;
+    }
+
+    setSyncing(true);
+    setSyncStatus('Buscando nuvem...');
+    loadCloudPortfolio(session.user.id)
+      .then((cloudPortfolio) => {
+        if (cloudPortfolio?.assets.length) {
+          setPortfolioAssets(cloudPortfolio.assets);
+        }
+
+        if (cloudPortfolio?.transactions.length) {
+          setPortfolioTransactions(cloudPortfolio.transactions);
+        }
+
+        setSyncStatus(cloudPortfolio ? 'Carteira baixada' : 'Nada salvo na nuvem');
+      })
+      .catch(() => setSyncStatus('Falha ao baixar da nuvem'))
+      .finally(() => setSyncing(false));
+  };
+
+  if (isSupabaseConfigured && !session) {
+    return <AuthScreen />;
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
       <View style={styles.shell}>
         <Header />
+        <View style={styles.syncBanner}>
+          <Ionicons
+            color={session ? '#0E7A4F' : '#9A5A04'}
+            name={session ? 'cloud-done-outline' : 'phone-portrait-outline'}
+            size={16}
+          />
+          <Text style={styles.syncBannerText}>
+            {session?.user.email ? `${syncStatus} - ${session.user.email}` : 'Modo local'}
+          </Text>
+          {session ? (
+            <View style={styles.syncActions}>
+              <Pressable accessibilityRole="button" disabled={syncing} onPress={saveNow}>
+                <Text style={styles.syncActionText}>Sync</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" disabled={syncing} onPress={pullNow}>
+                <Text style={styles.syncActionText}>Baixar</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => supabase?.auth.signOut()}>
+                <Text style={styles.signOutText}>Sair</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
         {!storageReady ? (
           <View style={styles.storageBanner}>
             <Ionicons color="#657487" name="sync-outline" size={16} />
@@ -177,7 +317,9 @@ export default function App() {
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
         >
-          {activeTab === 'dashboard' && <Dashboard totals={totals} />}
+          {activeTab === 'dashboard' && (
+            <Dashboard allocation={portfolioAllocation} totals={totals} />
+          )}
           {activeTab === 'carteira' && (
             <Portfolio
               onAddAsset={(asset) =>
@@ -199,8 +341,15 @@ export default function App() {
             />
           )}
           {activeTab === 'dividendos' && <Dividends />}
+          {activeTab === 'metas' && <Goals totals={totals} />}
           {activeTab === 'radar' && <Opportunities positions={portfolioPositions} />}
-          {activeTab === 'ia' && <Assistant />}
+          {activeTab === 'ia' && (
+            <Assistant
+              allocation={portfolioAllocation}
+              positions={portfolioPositions}
+              totals={totals}
+            />
+          )}
         </ScrollView>
       </View>
     </SafeAreaView>
@@ -226,9 +375,101 @@ function Header() {
   );
 }
 
+function AuthScreen() {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const canSubmit = email.includes('@') && password.length >= 6 && !loading;
+
+  const submit = async () => {
+    if (!supabase || !canSubmit) {
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+
+    const result =
+      mode === 'signin'
+        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
+        : await supabase.auth.signUp({ email: email.trim(), password });
+
+    setLoading(false);
+
+    if (result.error) {
+      setMessage(result.error.message);
+      return;
+    }
+
+    if (mode === 'signup' && !result.data.session) {
+      setMessage('Cadastro criado. Verifique seu email para confirmar a conta.');
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar style="dark" />
+      <View style={styles.authShell}>
+        <Text style={styles.brand}>{env.appName}</Text>
+        <Text style={styles.authTitle}>
+          {mode === 'signin' ? 'Entrar na carteira' : 'Criar conta'}
+        </Text>
+        <Text style={styles.authText}>
+          Sincronize ativos, lancamentos e carteira por usuario com Supabase.
+        </Text>
+
+        <View style={styles.formCard}>
+          <Field
+            inputMode="text"
+            label="Email"
+            onChangeText={setEmail}
+            placeholder="voce@email.com"
+            value={email}
+          />
+          <Field
+            inputMode="text"
+            label="Senha"
+            onChangeText={setPassword}
+            placeholder="minimo 6 caracteres"
+            secureTextEntry
+            value={password}
+          />
+
+          {message ? <Text style={styles.authMessage}>{message}</Text> : null}
+
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canSubmit}
+            onPress={submit}
+            style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
+          >
+            <Text style={styles.primaryButtonText}>
+              {loading ? 'Aguarde...' : mode === 'signin' ? 'Entrar' : 'Cadastrar'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setMode((current) => (current === 'signin' ? 'signup' : 'signin'))}
+            style={styles.authSwitch}
+          >
+            <Text style={styles.sectionAction}>
+              {mode === 'signin' ? 'Criar uma conta' : 'Ja tenho conta'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
 function Dashboard({
+  allocation,
   totals,
 }: {
+  allocation: AllocationSlice[];
   totals: {
     invested: number;
     current: number;
@@ -307,9 +548,14 @@ function Portfolio({
   onAddTransaction: (transaction: Transaction) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
+  const [selectedTicker, setSelectedTicker] = useState(positions[0]?.ticker ?? '');
   const recentTransactions = [...transactions]
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 5);
+  const selectedPosition = positions.find((position) => position.ticker === selectedTicker);
+  const selectedTransactions = transactions
+    .filter((transaction) => transaction.ticker === selectedPosition?.ticker)
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   return (
     <>
@@ -329,8 +575,23 @@ function Portfolio({
           }}
         />
       ) : null}
+      {selectedPosition ? (
+        <AssetDetail
+          onClose={() => setSelectedTicker('')}
+          position={selectedPosition}
+          transactions={selectedTransactions}
+        />
+      ) : null}
       {positions.map((position) => (
-        <View key={position.ticker} style={styles.positionCard}>
+        <Pressable
+          accessibilityRole="button"
+          key={position.ticker}
+          onPress={() => setSelectedTicker(position.ticker)}
+          style={[
+            styles.positionCard,
+            selectedTicker === position.ticker && styles.positionCardSelected,
+          ]}
+        >
           <View style={styles.positionHeader}>
             <View style={styles.positionTitleBlock}>
               <Text style={styles.ticker}>{position.ticker}</Text>
@@ -374,7 +635,7 @@ function Portfolio({
             <Text style={styles.muted}>Preco medio calculado por lancamentos</Text>
             <Text style={styles.averageValue}>{currency.format(position.averagePrice)}</Text>
           </View>
-        </View>
+        </Pressable>
       ))}
 
       <SectionTitle title="Ultimos lancamentos" action={`${transactions.length} total`} />
@@ -493,6 +754,147 @@ function Dividends() {
   );
 }
 
+function Goals({
+  totals,
+}: {
+  totals: {
+    invested: number;
+    current: number;
+    dividendsTotal: number;
+    profit: number;
+    performance: number;
+  };
+}) {
+  const [monthlyContribution, setMonthlyContribution] = useState('1000');
+  const [expectedReturn, setExpectedReturn] = useState('10');
+  const [expectedInflation, setExpectedInflation] = useState('4');
+  const contribution = parseNumber(monthlyContribution);
+  const annualReturn = parseNumber(expectedReturn);
+  const annualInflation = parseNumber(expectedInflation);
+  const passiveIncomeTarget = 3000;
+  const emergencyReserveTarget = 36000;
+  const financialFreedomTarget = 1000000;
+  const monthlyDividendAverage = dividendHistory.reduce((sum, item) => sum + item.value, 0) / dividendHistory.length;
+  const projectedYearlyDividends = monthlyDividendAverage * 12;
+  const realAnnualReturn = calculateRealAnnualReturn(annualReturn, annualInflation);
+  const monthsToFreedom = calculateMonthsToGoal({
+    currentValue: totals.current,
+    monthlyContribution: contribution,
+    targetValue: financialFreedomTarget,
+    annualRealReturn: realAnnualReturn,
+  });
+
+  return (
+    <>
+      <View style={styles.heroPanel}>
+        <View style={styles.heroTop}>
+          <View>
+            <Text style={styles.overline}>Plano financeiro</Text>
+            <Text style={styles.heroValue}>{currency.format(totals.current)}</Text>
+          </View>
+          <View style={styles.incomeBadge}>
+            <Text style={styles.incomeBadgeText}>
+              {Math.round((totals.current / financialFreedomTarget) * 100)}%
+            </Text>
+          </View>
+        </View>
+        <View style={styles.metricGrid}>
+          <Metric label="Meta liberdade" value={currency.format(financialFreedomTarget)} />
+          <Metric label="Renda projetada" value={currency.format(projectedYearlyDividends)} />
+          <Metric label="Aporte mensal" value={currency.format(contribution)} />
+          <Metric label="Retorno real" value={`${realAnnualReturn.toFixed(1)}% a.a.`} />
+        </View>
+      </View>
+
+      <SectionTitle title="Metas principais" />
+      <GoalCard
+        icon="cash-outline"
+        label="Renda passiva mensal"
+        progress={monthlyDividendAverage}
+        target={passiveIncomeTarget}
+      />
+      <GoalCard
+        icon="shield-checkmark-outline"
+        label="Reserva de emergencia"
+        progress={Math.min(totals.current * 0.18, emergencyReserveTarget)}
+        target={emergencyReserveTarget}
+      />
+      <GoalCard
+        icon="rocket-outline"
+        label="Liberdade financeira"
+        progress={totals.current}
+        target={financialFreedomTarget}
+      />
+
+      <SectionTitle title="Simulacao" action="aporte mensal" />
+      <View style={styles.card}>
+        <Field
+          label="Quanto voce pretende aportar por mes?"
+          onChangeText={setMonthlyContribution}
+          placeholder="1000"
+          value={monthlyContribution}
+        />
+        <View style={styles.formGrid}>
+          <Field
+            label="Rentabilidade anual esperada (%)"
+            onChangeText={setExpectedReturn}
+            placeholder="10"
+            value={expectedReturn}
+          />
+          <Field
+            label="Inflacao anual esperada (%)"
+            onChangeText={setExpectedInflation}
+            placeholder="4"
+            value={expectedInflation}
+          />
+        </View>
+        <View style={styles.formSummary}>
+          <Text style={styles.muted}>Prazo com juros compostos reais</Text>
+          <Text style={styles.formSummaryValue}>{formatYears(monthsToFreedom)}</Text>
+        </View>
+        <Text style={styles.simulationNote}>
+          A simulacao usa rentabilidade real mensal, descontando inflacao, e considera aportes
+          mensais constantes.
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function GoalCard({
+  icon,
+  label,
+  progress,
+  target,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  progress: number;
+  target: number;
+}) {
+  const percent = target > 0 ? Math.min(100, Math.round((progress / target) * 100)) : 0;
+
+  return (
+    <View style={styles.goalCard}>
+      <View style={styles.goalHeader}>
+        <View style={styles.goalIcon}>
+          <Ionicons color="#2868E8" name={icon} size={20} />
+        </View>
+        <View style={styles.goalTitleBlock}>
+          <Text style={styles.rowTitle}>{label}</Text>
+          <Text style={styles.muted}>
+            {currency.format(progress)} de {currency.format(target)}
+          </Text>
+        </View>
+        <Text style={styles.goalPercent}>{percent}%</Text>
+      </View>
+      <View style={styles.goalTrack}>
+        <View style={[styles.goalFill, { width: `${percent}%` }]} />
+      </View>
+    </View>
+  );
+}
+
 function Opportunities({ positions }: { positions: Position[] }) {
   const belowCeiling = positions.filter(
     (position) => position.ceilingPrice > 0 && position.currentPrice <= position.ceilingPrice,
@@ -549,7 +951,30 @@ function Opportunities({ positions }: { positions: Position[] }) {
   );
 }
 
-function Assistant() {
+function Assistant({
+  allocation,
+  positions,
+  totals,
+}: {
+  allocation: AllocationSlice[];
+  positions: Position[];
+  totals: {
+    invested: number;
+    current: number;
+    dividendsTotal: number;
+    profit: number;
+    performance: number;
+  };
+}) {
+  const questions = [
+    'Como esta minha carteira?',
+    'Quais ativos mais puxaram minha rentabilidade?',
+    'Quanto recebi de dividendos este mes?',
+    'Qual ativo esta acima do meu preco teto?',
+  ];
+  const [selectedQuestion, setSelectedQuestion] = useState(questions[0]);
+  const answer = getAssistantAnswer(selectedQuestion, positions, allocation, totals);
+
   if (!env.aiAssistantEnabled) {
     return (
       <View style={styles.aiPanel}>
@@ -573,8 +998,7 @@ function Assistant() {
         </View>
         <Text style={styles.aiTitle}>Assistente da carteira</Text>
         <Text style={styles.aiText}>
-          Sua carteira esta positiva no ano, mas ha concentracao acima do limite no setor
-          financeiro. Este painel oferece apoio educacional e nao substitui analise propria.
+          {answer}
         </Text>
         <View style={styles.configNotice}>
           <Ionicons
@@ -591,15 +1015,29 @@ function Assistant() {
       </View>
 
       <SectionTitle title="Perguntas rapidas" />
-      {[
-        'Como esta minha carteira?',
-        'Quais ativos mais puxaram minha rentabilidade?',
-        'Quanto recebi de dividendos este mes?',
-        'Qual ativo esta acima do meu preco teto?',
-      ].map((question) => (
-        <Pressable accessibilityRole="button" key={question} style={styles.questionButton}>
-          <Text style={styles.questionText}>{question}</Text>
-          <Ionicons color="#2868E8" name="arrow-forward-outline" size={18} />
+      {questions.map((question) => (
+        <Pressable
+          accessibilityRole="button"
+          key={question}
+          onPress={() => setSelectedQuestion(question)}
+          style={[
+            styles.questionButton,
+            selectedQuestion === question && styles.questionButtonActive,
+          ]}
+        >
+          <Text
+            style={[
+              styles.questionText,
+              selectedQuestion === question && styles.questionTextActive,
+            ]}
+          >
+            {question}
+          </Text>
+          <Ionicons
+            color={selectedQuestion === question ? '#FFFFFF' : '#2868E8'}
+            name="arrow-forward-outline"
+            size={18}
+          />
         </Pressable>
       ))}
     </>
@@ -697,30 +1135,184 @@ function AlertCard({
   );
 }
 
+function AssetDetail({
+  position,
+  transactions,
+  onClose,
+}: {
+  position: Position;
+  transactions: Transaction[];
+  onClose: () => void;
+}) {
+  const invested = position.quantity * position.averagePrice;
+  const current = position.quantity * position.currentPrice;
+  const profit = current - invested;
+  const belowCeiling =
+    position.ceilingPrice > 0 && position.currentPrice <= position.ceilingPrice;
+  const aboveFair = position.fairPrice > 0 && position.currentPrice > position.fairPrice;
+
+  return (
+    <View style={styles.detailPanel}>
+      <View style={styles.detailHeader}>
+        <View>
+          <Text style={styles.detailTicker}>{position.ticker}</Text>
+          <Text style={styles.muted}>{position.name}</Text>
+        </View>
+        <Pressable accessibilityRole="button" onPress={onClose} style={styles.detailClose}>
+          <Ionicons color="#657487" name="close-outline" size={20} />
+        </Pressable>
+      </View>
+
+      <View style={styles.detailGrid}>
+        <Metric compact label="Valor atual" value={currency.format(current)} />
+        <Metric compact label="Investido" value={currency.format(invested)} />
+        <Metric
+          compact
+          label="Resultado"
+          tone={profit >= 0 ? 'positive' : undefined}
+          value={currency.format(profit)}
+        />
+        <Metric compact label="Margem" value={getSafetyMargin(position)} />
+      </View>
+
+      <View style={styles.valuationGrid}>
+        <ValuationItem label="Cotacao" value={currency.format(position.currentPrice)} />
+        <ValuationItem label="Preco teto" value={formatOptionalCurrency(position.ceilingPrice)} />
+        <ValuationItem label="Preco justo" value={formatOptionalCurrency(position.fairPrice)} />
+      </View>
+
+      <View style={styles.detailFlags}>
+        <StatusPill
+          tone={belowCeiling ? 'positive' : 'neutral'}
+          text={belowCeiling ? 'Abaixo do teto' : 'Acima do teto'}
+        />
+        <StatusPill
+          tone={aboveFair ? 'warning' : 'positive'}
+          text={aboveFair ? 'Acima do justo' : 'Dentro do valor justo'}
+        />
+      </View>
+
+      <View style={styles.detailTransactionsHeader}>
+        <Text style={styles.rowTitle}>Lancamentos do ativo</Text>
+        <Text style={styles.muted}>{transactions.length} registros</Text>
+      </View>
+      {transactions.slice(0, 3).map((transaction) => (
+        <TransactionRow key={transaction.id} transaction={transaction} compact />
+      ))}
+    </View>
+  );
+}
+
+function ValuationItem({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.valuationItem}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.valuationValue}>{value}</Text>
+    </View>
+  );
+}
+
+function StatusPill({
+  text,
+  tone,
+}: {
+  text: string;
+  tone: 'positive' | 'warning' | 'neutral';
+}) {
+  return (
+    <View
+      style={[
+        styles.statusPill,
+        tone === 'positive' && styles.statusPillPositive,
+        tone === 'warning' && styles.statusPillWarning,
+      ]}
+    >
+      <Text
+        style={[
+          styles.statusPillText,
+          tone === 'positive' && styles.statusPillTextPositive,
+          tone === 'warning' && styles.statusPillTextWarning,
+        ]}
+      >
+        {text}
+      </Text>
+    </View>
+  );
+}
+
 function TransactionForm({
   onCancel,
+  onCreateAsset,
   positions,
   onSubmit,
 }: {
   onCancel: () => void;
+  onCreateAsset: (asset: Position) => void;
   positions: Position[];
   onSubmit: (transaction: Transaction) => void;
 }) {
+  const [assetMode, setAssetMode] = useState<'existing' | 'new'>('existing');
   const [ticker, setTicker] = useState(positions[0].ticker);
   const [type, setType] = useState<Transaction['type']>('buy');
   const [quantity, setQuantity] = useState('');
   const [price, setPrice] = useState('');
   const [fees, setFees] = useState('0');
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [newTicker, setNewTicker] = useState('');
+  const [name, setName] = useState('');
+  const [assetType, setAssetType] = useState<Position['type']>('Acao');
+  const [sector, setSector] = useState('');
+  const [currentPrice, setCurrentPrice] = useState('');
+  const [ceilingPrice, setCeilingPrice] = useState('');
+  const [fairPrice, setFairPrice] = useState('');
+
+  const selectedPosition = positions.find((position) => position.ticker === ticker);
+  const catalogMatches = useMemo(
+    () => searchAssetCatalog(`${newTicker} ${name}`),
+    [name, newTicker],
+  );
+
+  useEffect(() => {
+    if (assetMode === 'existing' && selectedPosition) {
+      setPrice(String(selectedPosition.currentPrice).replace('.', ','));
+    }
+  }, [assetMode, selectedPosition]);
 
   const quantityValue = parseNumber(quantity);
-  const priceValue = parseNumber(price);
+  const existingPriceValue = parseNumber(price);
+  const currentPriceValue = parseNumber(currentPrice);
+  const priceValue = assetMode === 'new' ? currentPriceValue : existingPriceValue;
   const feesValue = parseNumber(fees);
+  const ceilingPriceValue = parseNumber(ceilingPrice);
+  const fairPriceValue = parseNumber(fairPrice);
+  const normalizedNewTicker = newTicker.trim().toUpperCase();
+  const newAssetIsValid =
+    normalizedNewTicker.length >= 3 &&
+    name.trim().length >= 2 &&
+    sector.trim().length >= 2 &&
+    currentPriceValue > 0;
   const canSubmit =
-    quantityValue > 0 && priceValue > 0 && feesValue >= 0 && isValidDateInput(date);
+    quantityValue > 0 &&
+    priceValue > 0 &&
+    feesValue >= 0 &&
+    isValidDateInput(date) &&
+    (assetMode === 'existing' || newAssetIsValid);
+
+  const transactionTicker = assetMode === 'new' ? normalizedNewTicker : ticker;
+
+  const applyCatalogMatch = (match: ReturnType<typeof searchAssetCatalog>[number]) => {
+    setNewTicker(match.ticker);
+    setName(match.name);
+    setAssetType(match.type);
+    setSector(match.sector);
+    setCurrentPrice(formatInputNumber(match.currentPrice));
+    setCeilingPrice(match.ceilingPrice > 0 ? formatInputNumber(match.ceilingPrice) : '');
+    setFairPrice(match.fairPrice > 0 ? formatInputNumber(match.fairPrice) : '');
+  };
 
   return (
     <View style={styles.formCard}>
+      <Text style={styles.formTitle}>Adicionar ativo ou lancamento</Text>
       <View style={styles.segmented}>
         <Pressable
           accessibilityRole="button"
@@ -742,26 +1334,153 @@ function TransactionForm({
         </Pressable>
       </View>
 
+      <Text style={styles.inputLabel}>Origem do ativo</Text>
+      <View style={styles.segmented}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setAssetMode('existing')}
+          style={[styles.segmentButton, assetMode === 'existing' && styles.segmentActive]}
+        >
+          <Text
+            style={[
+              styles.segmentText,
+              assetMode === 'existing' && styles.segmentTextActive,
+            ]}
+          >
+            Existente
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setAssetMode('new')}
+          style={[styles.segmentButton, assetMode === 'new' && styles.segmentActive]}
+        >
+          <Text
+            style={[
+              styles.segmentText,
+              assetMode === 'new' && styles.segmentTextActive,
+            ]}
+          >
+            Novo ativo
+          </Text>
+        </Pressable>
+      </View>
+
       <Text style={styles.inputLabel}>Ativo</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={styles.filterChips}>
-          {positions.map((position) => {
-            const selected = ticker === position.ticker;
-            return (
-              <Pressable
-                accessibilityRole="button"
-                key={position.ticker}
-                onPress={() => setTicker(position.ticker)}
-                style={[styles.filterChip, selected && styles.filterChipActive]}
-              >
-                <Text style={[styles.filterChipText, selected && styles.filterChipTextActive]}>
-                  {position.ticker}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </ScrollView>
+      {assetMode === 'existing' ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={styles.filterChips}>
+            {positions.map((position) => {
+              const selected = ticker === position.ticker;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  key={position.ticker}
+                  onPress={() => setTicker(position.ticker)}
+                  style={[styles.filterChip, selected && styles.filterChipActive]}
+                >
+                  <Text style={[styles.filterChipText, selected && styles.filterChipTextActive]}>
+                    {position.ticker}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </ScrollView>
+      ) : (
+        <>
+          <View style={styles.formGrid}>
+            <Field
+              inputMode="text"
+              label="Ticker"
+              onChangeText={setNewTicker}
+              placeholder="PETR4"
+              value={newTicker}
+            />
+            <Field
+              inputMode="text"
+              label="Nome"
+              onChangeText={setName}
+              placeholder="Petrobras"
+              value={name}
+            />
+          </View>
+          {catalogMatches.length ? (
+            <View style={styles.suggestionBox}>
+              <Text style={styles.suggestionTitle}>Sugestoes encontradas</Text>
+              {catalogMatches.map((match) => (
+                <Pressable
+                  accessibilityRole="button"
+                  key={match.ticker}
+                  onPress={() => applyCatalogMatch(match)}
+                  style={styles.suggestionRow}
+                >
+                  <View>
+                    <Text style={styles.rowTitle}>{match.ticker}</Text>
+                    <Text style={styles.muted}>{match.name}</Text>
+                  </View>
+                  <View style={styles.suggestionMeta}>
+                    <Text style={styles.suggestionType}>{match.type}</Text>
+                    <Text style={styles.suggestionPrice}>
+                      {currency.format(match.currentPrice)}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
+          <Text style={styles.inputLabel}>Classe</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={styles.filterChips}>
+              {(['Acao', 'FII', 'ETF', 'Renda fixa'] as Position['type'][]).map((item) => {
+                const selected = assetType === item;
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={item}
+                    onPress={() => setAssetType(item)}
+                    style={[styles.filterChip, selected && styles.filterChipActive]}
+                  >
+                    <Text style={[styles.filterChipText, selected && styles.filterChipTextActive]}>
+                      {item}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </ScrollView>
+
+          <Field
+            inputMode="text"
+            label="Setor"
+            onChangeText={setSector}
+            placeholder="Energia"
+            value={sector}
+          />
+
+          <View style={styles.formGrid}>
+            <Field
+              label="Cotacao"
+              onChangeText={setCurrentPrice}
+              placeholder="32,10"
+              value={currentPrice}
+            />
+            <Field
+              label="Preco teto"
+              onChangeText={setCeilingPrice}
+              placeholder="30,00"
+              value={ceilingPrice}
+            />
+            <Field
+              label="Preco justo"
+              onChangeText={setFairPrice}
+              placeholder="36,00"
+              value={fairPrice}
+            />
+          </View>
+        </>
+      )}
 
       <View style={styles.formGrid}>
         <Field
@@ -770,12 +1489,14 @@ function TransactionForm({
           placeholder="100"
           value={quantity}
         />
-        <Field
-          label="Preco"
-          onChangeText={setPrice}
-          placeholder="10,50"
-          value={price}
-        />
+        {assetMode === 'existing' ? (
+          <Field
+            label="Preco"
+            onChangeText={setPrice}
+            placeholder="10,50"
+            value={price}
+          />
+        ) : null}
         <Field label="Taxas" onChangeText={setFees} placeholder="0,00" value={fees} />
       </View>
       <Field
@@ -785,6 +1506,15 @@ function TransactionForm({
         placeholder="2026-04-28"
         value={date}
       />
+
+      <View style={styles.formSummary}>
+        <Text style={styles.muted}>
+          {assetMode === 'new'
+            ? 'Preco do lancamento vem da cotacao'
+            : 'Preco preenchido pela cotacao atual'}
+        </Text>
+        <Text style={styles.formSummaryValue}>{currency.format(priceValue)}</Text>
+      </View>
 
       <View style={styles.formSummary}>
         <Text style={styles.muted}>Total estimado</Text>
@@ -800,150 +1530,35 @@ function TransactionForm({
         <Pressable
           accessibilityRole="button"
           disabled={!canSubmit}
-          onPress={() =>
+          onPress={() => {
+            if (assetMode === 'new') {
+              onCreateAsset({
+                ticker: normalizedNewTicker,
+                name: name.trim(),
+                type: assetType,
+                sector: sector.trim(),
+                allocation: 0,
+                quantity: 0,
+                averagePrice: 0,
+                currentPrice: currentPriceValue,
+                ceilingPrice: ceilingPriceValue,
+                fairPrice: fairPriceValue,
+              });
+            }
+
             onSubmit({
               id: `trx-${Date.now()}`,
-              ticker,
+              ticker: transactionTicker,
               type,
               quantity: quantityValue,
               price: priceValue,
               fees: feesValue,
               date,
-            })
-          }
+            });
+          }}
           style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
         >
           <Text style={styles.primaryButtonText}>Salvar</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-function AssetForm({
-  onCancel,
-  onSubmit,
-}: {
-  onCancel: () => void;
-  onSubmit: (asset: Position) => void;
-}) {
-  const [ticker, setTicker] = useState('');
-  const [name, setName] = useState('');
-  const [assetType, setAssetType] = useState<Position['type']>('Acao');
-  const [sector, setSector] = useState('');
-  const [currentPrice, setCurrentPrice] = useState('');
-  const [ceilingPrice, setCeilingPrice] = useState('');
-  const [fairPrice, setFairPrice] = useState('');
-
-  const currentPriceValue = parseNumber(currentPrice);
-  const ceilingPriceValue = parseNumber(ceilingPrice);
-  const fairPriceValue = parseNumber(fairPrice);
-  const normalizedTicker = ticker.trim().toUpperCase();
-  const canSubmit =
-    normalizedTicker.length >= 3 &&
-    name.trim().length >= 2 &&
-    sector.trim().length >= 2 &&
-    currentPriceValue > 0;
-
-  return (
-    <View style={styles.formCard}>
-      <Text style={styles.formTitle}>Novo ativo</Text>
-      <View style={styles.formGrid}>
-        <Field
-          inputMode="text"
-          label="Ticker"
-          onChangeText={setTicker}
-          placeholder="PETR4"
-          value={ticker}
-        />
-        <Field
-          inputMode="text"
-          label="Nome"
-          onChangeText={setName}
-          placeholder="Petrobras"
-          value={name}
-        />
-      </View>
-
-      <Text style={styles.inputLabel}>Classe</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={styles.filterChips}>
-          {(['Acao', 'FII', 'ETF', 'Renda fixa'] as Position['type'][]).map((type) => {
-            const selected = assetType === type;
-            return (
-              <Pressable
-                accessibilityRole="button"
-                key={type}
-                onPress={() => setAssetType(type)}
-                style={[styles.filterChip, selected && styles.filterChipActive]}
-              >
-                <Text style={[styles.filterChipText, selected && styles.filterChipTextActive]}>
-                  {type}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </ScrollView>
-
-      <Field
-        inputMode="text"
-        label="Setor"
-        onChangeText={setSector}
-        placeholder="Energia"
-        value={sector}
-      />
-
-      <View style={styles.formGrid}>
-        <Field
-          label="Cotacao"
-          onChangeText={setCurrentPrice}
-          placeholder="32,10"
-          value={currentPrice}
-        />
-        <Field
-          label="Preco teto"
-          onChangeText={setCeilingPrice}
-          placeholder="30,00"
-          value={ceilingPrice}
-        />
-        <Field
-          label="Preco justo"
-          onChangeText={setFairPrice}
-          placeholder="36,00"
-          value={fairPrice}
-        />
-      </View>
-
-      <View style={styles.formSummary}>
-        <Text style={styles.muted}>Ativo sera criado sem quantidade</Text>
-        <Text style={styles.formSummaryValue}>{normalizedTicker || '-'}</Text>
-      </View>
-
-      <View style={styles.formActions}>
-        <Pressable accessibilityRole="button" onPress={onCancel} style={styles.secondaryButton}>
-          <Text style={styles.secondaryButtonText}>Cancelar</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!canSubmit}
-          onPress={() =>
-            onSubmit({
-              ticker: normalizedTicker,
-              name: name.trim(),
-              type: assetType,
-              sector: sector.trim(),
-              allocation: 0,
-              quantity: 0,
-              averagePrice: 0,
-              currentPrice: currentPriceValue,
-              ceilingPrice: ceilingPriceValue,
-              fairPrice: fairPriceValue,
-            })
-          }
-          style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
-        >
-          <Text style={styles.primaryButtonText}>Criar ativo</Text>
         </Pressable>
       </View>
     </View>
@@ -955,12 +1570,14 @@ function Field({
   value,
   placeholder,
   inputMode = 'decimal',
+  secureTextEntry,
   onChangeText,
 }: {
   label: string;
   value: string;
   placeholder: string;
   inputMode?: 'decimal' | 'numeric' | 'text';
+  secureTextEntry?: boolean;
   onChangeText: (value: string) => void;
 }) {
   return (
@@ -972,6 +1589,7 @@ function Field({
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor="#94A3B8"
+        secureTextEntry={secureTextEntry}
         style={styles.input}
         value={value}
       />
@@ -999,11 +1617,17 @@ function DividendRow({ item, rank }: { item: Dividend; rank: number }) {
   );
 }
 
-function TransactionRow({ transaction }: { transaction: Transaction }) {
+function TransactionRow({
+  transaction,
+  compact,
+}: {
+  transaction: Transaction;
+  compact?: boolean;
+}) {
   const isBuy = transaction.type === 'buy';
 
   return (
-    <View style={styles.transactionRow}>
+    <View style={[styles.transactionRow, compact && styles.transactionRowCompact]}>
       <View style={[styles.transactionIcon, isBuy ? styles.buyIcon : styles.sellIcon]}>
         <Ionicons
           color={isBuy ? '#0E7A4F' : '#B64242'}
@@ -1299,6 +1923,10 @@ function parseNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function formatInputNumber(value: number) {
+  return String(value).replace('.', ',');
+}
+
 function isValidDateInput(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false;
@@ -1311,6 +1939,68 @@ function isValidDateInput(value: string) {
 function formatDate(value: string) {
   const [year, month, day] = value.split('-');
   return `${day}/${month}/${year}`;
+}
+
+function formatOptionalCurrency(value: number) {
+  return value > 0 ? currency.format(value) : 'Nao definido';
+}
+
+function formatYears(months: number) {
+  if (!months) {
+    return 'Sem aporte';
+  }
+
+  if (months === Infinity) {
+    return 'Nao atinge com estes parametros';
+  }
+
+  const years = Math.floor(months / 12);
+  const remainingMonths = months % 12;
+
+  if (!years) {
+    return `${remainingMonths} meses`;
+  }
+
+  if (!remainingMonths) {
+    return `${years} anos`;
+  }
+
+  return `${years} anos e ${remainingMonths} meses`;
+}
+
+function calculateRealAnnualReturn(nominalAnnualReturn: number, annualInflation: number) {
+  const nominal = nominalAnnualReturn / 100;
+  const inflation = annualInflation / 100;
+  return ((1 + nominal) / (1 + inflation) - 1) * 100;
+}
+
+function calculateMonthsToGoal({
+  currentValue,
+  monthlyContribution,
+  targetValue,
+  annualRealReturn,
+}: {
+  currentValue: number;
+  monthlyContribution: number;
+  targetValue: number;
+  annualRealReturn: number;
+}) {
+  if (currentValue >= targetValue) {
+    return 0;
+  }
+
+  const monthlyRate = Math.pow(1 + annualRealReturn / 100, 1 / 12) - 1;
+  let value = currentValue;
+
+  for (let month = 1; month <= 1200; month += 1) {
+    value = value * (1 + monthlyRate) + monthlyContribution;
+
+    if (value >= targetValue) {
+      return month;
+    }
+  }
+
+  return Infinity;
 }
 
 function getSafetyMargin(position: Position) {
@@ -1326,6 +2016,87 @@ function getPositionProfit(position: Position) {
   return position.quantity * (position.currentPrice - position.averagePrice);
 }
 
+function buildAllocationFromPositions(positions: Position[]): AllocationSlice[] {
+  const colors: Record<string, string> = {
+    Acao: '#2868E8',
+    FII: '#C9821D',
+    ETF: '#6F5BD7',
+    'Renda fixa': '#2F6F73',
+  };
+  const values = positions.reduce<Record<string, number>>((groups, position) => {
+    const current = position.quantity * position.currentPrice;
+    groups[position.type] = (groups[position.type] || 0) + current;
+    return groups;
+  }, {});
+  const total = Object.values(values).reduce((sum, value) => sum + value, 0);
+
+  if (!total) {
+    return allocation;
+  }
+
+  return Object.entries(values)
+    .filter(([, value]) => value > 0)
+    .map(([label, value]) => ({
+      label,
+      value: Math.round((value / total) * 100),
+      color: colors[label] || '#6C7A89',
+    }));
+}
+
+function getAssistantAnswer(
+  question: string,
+  positions: Position[],
+  allocation: AllocationSlice[],
+  totals: {
+    invested: number;
+    current: number;
+    dividendsTotal: number;
+    profit: number;
+    performance: number;
+  },
+) {
+  const positionedAssets = positions.filter((position) => position.quantity > 0);
+  const topAllocation = [...allocation].sort((a, b) => b.value - a.value)[0];
+  const bestAsset = [...positionedAssets].sort(
+    (a, b) => getPositionProfit(b) - getPositionProfit(a),
+  )[0];
+  const aboveCeiling = positionedAssets.filter(
+    (position) => position.ceilingPrice > 0 && position.currentPrice > position.ceilingPrice,
+  );
+
+  if (question.includes('puxaram')) {
+    if (!bestAsset) {
+      return 'Ainda nao ha posicoes suficientes para identificar os principais motores de rentabilidade.';
+    }
+
+    return `${bestAsset.ticker} e o ativo que mais contribui no momento, com resultado aproximado de ${currency.format(
+      getPositionProfit(bestAsset),
+    )}. Use isso como leitura da carteira, nao como recomendacao de compra ou venda.`;
+  }
+
+  if (question.includes('dividendos')) {
+    return `Neste mes, os dividendos registrados somam ${currency.format(
+      totals.dividendsTotal,
+    )}. Acompanhe tambem a recorrencia por setor e por ativo antes de projetar renda futura.`;
+  }
+
+  if (question.includes('preco teto')) {
+    if (!aboveCeiling.length) {
+      return 'Nenhum ativo com posicao esta acima do preco teto configurado. Ainda assim, revise os fundamentos antes de qualquer decisao.';
+    }
+
+    return `${aboveCeiling
+      .map((position) => position.ticker)
+      .join(', ')} esta acima do preco teto configurado. Isso sugere revisar premissas e fundamentos antes de novos aportes.`;
+  }
+
+  return `Sua carteira vale ${currency.format(totals.current)}, com resultado de ${currency.format(
+    totals.profit,
+  )} (${totals.performance.toFixed(1)}%). A maior alocacao esta em ${
+    topAllocation?.label ?? 'classe indefinida'
+  } (${topAllocation?.value ?? 0}%).`;
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -1337,6 +2108,41 @@ const styles = StyleSheet.create({
     flex: 1,
     maxWidth: 760,
     width: '100%',
+  },
+  authShell: {
+    alignSelf: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    maxWidth: 520,
+    padding: 18,
+    width: '100%',
+  },
+  authTitle: {
+    color: '#172434',
+    fontSize: 28,
+    fontWeight: '900',
+    marginTop: 18,
+  },
+  authText: {
+    color: '#657487',
+    fontSize: 14,
+    lineHeight: 21,
+    marginBottom: 18,
+    marginTop: 8,
+  },
+  authMessage: {
+    color: '#9A5A04',
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 17,
+    marginBottom: 12,
+    marginTop: 4,
+  },
+  authSwitch: {
+    alignItems: 'center',
+    marginTop: 14,
+    minHeight: 36,
+    justifyContent: 'center',
   },
   header: {
     alignItems: 'center',
@@ -1388,6 +2194,37 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 18,
     paddingVertical: 8,
+  },
+  syncBanner: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderBottomColor: '#E1E8F0',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+  },
+  syncBannerText: {
+    color: '#657487',
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  syncActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  syncActionText: {
+    color: '#2868E8',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  signOutText: {
+    color: '#B64242',
+    fontSize: 12,
+    fontWeight: '900',
   },
   storageBannerText: {
     color: '#657487',
@@ -1548,6 +2385,97 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginBottom: 10,
   },
+  detailPanel: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#CFE0F6',
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 14,
+  },
+  detailHeader: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  detailTicker: {
+    color: '#172434',
+    fontSize: 24,
+    fontWeight: '900',
+  },
+  detailClose: {
+    alignItems: 'center',
+    backgroundColor: '#F5F7FA',
+    borderRadius: 8,
+    height: 34,
+    justifyContent: 'center',
+    width: 34,
+  },
+  detailGrid: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    padding: 12,
+  },
+  valuationGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  valuationItem: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    flex: 1,
+    minHeight: 62,
+    padding: 10,
+  },
+  valuationValue: {
+    color: '#172434',
+    fontSize: 13,
+    fontWeight: '900',
+    marginTop: 6,
+  },
+  detailFlags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  statusPill: {
+    backgroundColor: '#F0F4F8',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  statusPillPositive: {
+    backgroundColor: '#E8F6EF',
+  },
+  statusPillWarning: {
+    backgroundColor: '#FFF4DF',
+  },
+  statusPillText: {
+    color: '#657487',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  statusPillTextPositive: {
+    color: '#0E7A4F',
+  },
+  statusPillTextWarning: {
+    color: '#9A5A04',
+  },
+  detailTransactionsHeader: {
+    alignItems: 'center',
+    borderTopColor: '#E1E8F0',
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    paddingTop: 12,
+  },
   allocationRow: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -1648,6 +2576,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginBottom: 12,
     padding: 14,
+  },
+  positionCardSelected: {
+    borderColor: '#2868E8',
   },
   quickActions: {
     flexDirection: 'row',
@@ -1799,6 +2730,45 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginBottom: 2,
   },
+  suggestionBox: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 10,
+  },
+  suggestionTitle: {
+    color: '#657487',
+    fontSize: 12,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  suggestionRow: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    padding: 10,
+  },
+  suggestionMeta: {
+    alignItems: 'flex-end',
+  },
+  suggestionType: {
+    color: '#2868E8',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  suggestionPrice: {
+    color: '#172434',
+    fontSize: 12,
+    fontWeight: '900',
+    marginTop: 4,
+  },
   inputLabel: {
     color: '#657487',
     fontSize: 12,
@@ -1838,6 +2808,13 @@ const styles = StyleSheet.create({
     color: '#172434',
     fontSize: 14,
     fontWeight: '900',
+  },
+  simulationNote: {
+    color: '#657487',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+    marginTop: 10,
   },
   formActions: {
     flexDirection: 'row',
@@ -1941,6 +2918,48 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginTop: 4,
   },
+  goalCard: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 10,
+    padding: 14,
+  },
+  goalHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+  },
+  goalIcon: {
+    alignItems: 'center',
+    backgroundColor: '#EAF0FF',
+    borderRadius: 8,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  goalTitleBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  goalPercent: {
+    color: '#2868E8',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  goalTrack: {
+    backgroundColor: '#EDF1F6',
+    borderRadius: 5,
+    height: 10,
+    marginTop: 14,
+    overflow: 'hidden',
+  },
+  goalFill: {
+    backgroundColor: '#2868E8',
+    borderRadius: 5,
+    height: 10,
+  },
   transactionRow: {
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
@@ -1951,6 +2970,11 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 10,
     padding: 14,
+  },
+  transactionRowCompact: {
+    marginBottom: 0,
+    marginTop: 10,
+    padding: 10,
   },
   transactionIcon: {
     alignItems: 'center',
@@ -2084,11 +3108,18 @@ const styles = StyleSheet.create({
     minHeight: 54,
     paddingHorizontal: 14,
   },
+  questionButtonActive: {
+    backgroundColor: '#2868E8',
+    borderColor: '#2868E8',
+  },
   questionText: {
     color: '#172434',
     flex: 1,
     fontSize: 14,
     fontWeight: '900',
     paddingRight: 10,
+  },
+  questionTextActive: {
+    color: '#FFFFFF',
   },
 });
