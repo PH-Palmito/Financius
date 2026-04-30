@@ -44,13 +44,21 @@ import {
   saveStoredTransactions,
 } from './src/storage/portfolioStorage';
 
-type TabKey = 'dashboard' | 'carteira' | 'dividendos' | 'metas' | 'radar' | 'ia';
+type TabKey =
+  | 'dashboard'
+  | 'carteira'
+  | 'dividendos'
+  | 'metas'
+  | 'benchmarks'
+  | 'radar'
+  | 'ia';
 
 const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'dashboard', label: 'Inicio', icon: 'grid-outline' },
   { key: 'carteira', label: 'Carteira', icon: 'wallet-outline' },
   { key: 'dividendos', label: 'Dividendos', icon: 'cash-outline' },
   { key: 'metas', label: 'Metas', icon: 'flag-outline' },
+  { key: 'benchmarks', label: 'Benchmarks', icon: 'analytics-outline' },
   { key: 'radar', label: 'Radar', icon: 'scan-outline' },
   { key: 'ia', label: 'IA', icon: 'sparkles-outline' },
 ];
@@ -59,6 +67,49 @@ const currency = new Intl.NumberFormat(env.defaultLocale, {
   style: 'currency',
   currency: env.defaultCurrency,
 });
+
+const benchmarkSeries = {
+  carteira: [
+    { label: 'Jan', value: 0 },
+    { label: 'Fev', value: 4.5 },
+    { label: 'Mar', value: 2.6 },
+    { label: 'Abr', value: 10.6 },
+    { label: 'Mai', value: 17.2 },
+    { label: 'Jun', value: 22.7 },
+    { label: 'Jul', value: 27.2 },
+    { label: 'Ago', value: 33.6 },
+  ],
+  cdi: [
+    { label: 'Jan', value: 0 },
+    { label: 'Fev', value: 0.9 },
+    { label: 'Mar', value: 1.8 },
+    { label: 'Abr', value: 2.7 },
+    { label: 'Mai', value: 3.6 },
+    { label: 'Jun', value: 4.5 },
+    { label: 'Jul', value: 5.4 },
+    { label: 'Ago', value: 6.3 },
+  ],
+  ibovespa: [
+    { label: 'Jan', value: 0 },
+    { label: 'Fev', value: 2.2 },
+    { label: 'Mar', value: -1.1 },
+    { label: 'Abr', value: 5.4 },
+    { label: 'Mai', value: 7.8 },
+    { label: 'Jun', value: 9.1 },
+    { label: 'Jul', value: 11.6 },
+    { label: 'Ago', value: 13.9 },
+  ],
+  ipca: [
+    { label: 'Jan', value: 0 },
+    { label: 'Fev', value: 0.4 },
+    { label: 'Mar', value: 0.8 },
+    { label: 'Abr', value: 1.2 },
+    { label: 'Mai', value: 1.6 },
+    { label: 'Jun', value: 2.0 },
+    { label: 'Jul', value: 2.4 },
+    { label: 'Ago', value: 2.8 },
+  ],
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
@@ -342,6 +393,7 @@ export default function App() {
           )}
           {activeTab === 'dividendos' && <Dividends />}
           {activeTab === 'metas' && <Goals totals={totals} />}
+          {activeTab === 'benchmarks' && <Benchmarks />}
           {activeTab === 'radar' && <Opportunities positions={portfolioPositions} />}
           {activeTab === 'ia' && (
             <Assistant
@@ -768,18 +820,23 @@ function Goals({
   const [monthlyContribution, setMonthlyContribution] = useState('1000');
   const [expectedReturn, setExpectedReturn] = useState('10');
   const [expectedInflation, setExpectedInflation] = useState('4');
+  const [passiveIncomeTargetInput, setPassiveIncomeTargetInput] = useState('3000');
+  const [emergencyReserveTargetInput, setEmergencyReserveTargetInput] = useState('36000');
+  const [financialFreedomTargetInput, setFinancialFreedomTargetInput] = useState('1000000');
+  const [reinvestDividends, setReinvestDividends] = useState(true);
   const contribution = parseNumber(monthlyContribution);
   const annualReturn = parseNumber(expectedReturn);
   const annualInflation = parseNumber(expectedInflation);
-  const passiveIncomeTarget = 3000;
-  const emergencyReserveTarget = 36000;
-  const financialFreedomTarget = 1000000;
+  const passiveIncomeTarget = parseNumber(passiveIncomeTargetInput);
+  const emergencyReserveTarget = parseNumber(emergencyReserveTargetInput);
+  const financialFreedomTarget = parseNumber(financialFreedomTargetInput);
   const monthlyDividendAverage = dividendHistory.reduce((sum, item) => sum + item.value, 0) / dividendHistory.length;
   const projectedYearlyDividends = monthlyDividendAverage * 12;
+  const effectiveMonthlyContribution = contribution + (reinvestDividends ? monthlyDividendAverage : 0);
   const realAnnualReturn = calculateRealAnnualReturn(annualReturn, annualInflation);
   const monthsToFreedom = calculateMonthsToGoal({
     currentValue: totals.current,
-    monthlyContribution: contribution,
+    monthlyContribution: effectiveMonthlyContribution,
     targetValue: financialFreedomTarget,
     annualRealReturn: realAnnualReturn,
   });
@@ -801,9 +858,31 @@ function Goals({
         <View style={styles.metricGrid}>
           <Metric label="Meta liberdade" value={currency.format(financialFreedomTarget)} />
           <Metric label="Renda projetada" value={currency.format(projectedYearlyDividends)} />
-          <Metric label="Aporte mensal" value={currency.format(contribution)} />
+          <Metric label="Aporte efetivo" value={currency.format(effectiveMonthlyContribution)} />
           <Metric label="Retorno real" value={`${realAnnualReturn.toFixed(1)}% a.a.`} />
         </View>
+      </View>
+
+      <SectionTitle title="Configurar metas" />
+      <View style={styles.card}>
+        <Field
+          label="Renda passiva mensal desejada"
+          onChangeText={setPassiveIncomeTargetInput}
+          placeholder="3000"
+          value={passiveIncomeTargetInput}
+        />
+        <Field
+          label="Reserva de emergencia desejada"
+          onChangeText={setEmergencyReserveTargetInput}
+          placeholder="36000"
+          value={emergencyReserveTargetInput}
+        />
+        <Field
+          label="Meta de liberdade financeira"
+          onChangeText={setFinancialFreedomTargetInput}
+          placeholder="1000000"
+          value={financialFreedomTargetInput}
+        />
       </View>
 
       <SectionTitle title="Metas principais" />
@@ -848,13 +927,90 @@ function Goals({
             value={expectedInflation}
           />
         </View>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setReinvestDividends((current) => !current)}
+          style={styles.toggleRow}
+        >
+          <View style={[styles.toggleBox, reinvestDividends && styles.toggleBoxActive]}>
+            {reinvestDividends ? (
+              <Ionicons color="#FFFFFF" name="checkmark-outline" size={16} />
+            ) : null}
+          </View>
+          <View style={styles.toggleTextBlock}>
+            <Text style={styles.rowTitle}>Reinvestir dividendos</Text>
+            <Text style={styles.muted}>
+              Soma a media mensal de dividendos ao aporte da simulacao.
+            </Text>
+          </View>
+        </Pressable>
         <View style={styles.formSummary}>
           <Text style={styles.muted}>Prazo com juros compostos reais</Text>
           <Text style={styles.formSummaryValue}>{formatYears(monthsToFreedom)}</Text>
         </View>
         <Text style={styles.simulationNote}>
           A simulacao usa rentabilidade real mensal, descontando inflacao, e considera aportes
-          mensais constantes.
+          mensais constantes. Quando ativado, dividendos entram como aporte adicional.
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function Benchmarks() {
+  const { width } = useWindowDimensions();
+  const chartWidth = Math.min(344, Math.max(286, width - 56));
+  const carteiraReturn = lastPoint(benchmarkSeries.carteira);
+  const cdiReturn = lastPoint(benchmarkSeries.cdi);
+  const ibovespaReturn = lastPoint(benchmarkSeries.ibovespa);
+  const ipcaReturn = lastPoint(benchmarkSeries.ipca);
+
+  return (
+    <>
+      <View style={styles.heroPanel}>
+        <View style={styles.heroTop}>
+          <View>
+            <Text style={styles.overline}>Rentabilidade acumulada</Text>
+            <Text style={styles.heroValue}>{carteiraReturn.toFixed(1)}%</Text>
+          </View>
+          <View style={styles.incomeBadge}>
+            <Text style={styles.incomeBadgeText}>
+              {(carteiraReturn - cdiReturn).toFixed(1)} p.p. vs CDI
+            </Text>
+          </View>
+        </View>
+        <View style={styles.metricGrid}>
+          <Metric label="CDI" value={`${cdiReturn.toFixed(1)}%`} />
+          <Metric label="Ibovespa" value={`${ibovespaReturn.toFixed(1)}%`} />
+          <Metric label="IPCA" value={`${ipcaReturn.toFixed(1)}%`} />
+          <Metric label="Alfa vs Ibov" value={`${(carteiraReturn - ibovespaReturn).toFixed(1)} p.p.`} />
+        </View>
+      </View>
+
+      <SectionTitle title="Comparativo" action="ano atual" />
+      <View style={styles.card}>
+        <BenchmarkChart
+          cdi={benchmarkSeries.cdi}
+          data={benchmarkSeries.carteira}
+          height={210}
+          ibovespa={benchmarkSeries.ibovespa}
+          ipca={benchmarkSeries.ipca}
+          width={chartWidth}
+        />
+        <View style={styles.benchmarkLegendGrid}>
+          <ChartLegend color="#2868E8" label="Carteira" />
+          <ChartLegend color="#0E7A4F" label="CDI" />
+          <ChartLegend color="#C9821D" label="Ibovespa" />
+          <ChartLegend color="#6F5BD7" label="IPCA" />
+        </View>
+      </View>
+
+      <SectionTitle title="Leitura rapida" />
+      <View style={styles.card}>
+        <Text style={styles.aiText}>
+          A carteira supera CDI e Ibovespa no periodo simulado. Antes de concluir que ha
+          vantagem estrutural, compare tambem volatilidade, concentracao e recorrencia dos
+          resultados.
         </Text>
       </View>
     </>
@@ -1829,6 +1985,105 @@ function LineChart({
   );
 }
 
+function BenchmarkChart({
+  data,
+  cdi,
+  ibovespa,
+  ipca,
+  width,
+  height,
+}: {
+  data: ChartPoint[];
+  cdi: ChartPoint[];
+  ibovespa: ChartPoint[];
+  ipca: ChartPoint[];
+  width: number;
+  height: number;
+}) {
+  const padding = { top: 18, right: 12, bottom: 34, left: 38 };
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const allValues = [...data, ...cdi, ...ibovespa, ...ipca].map((item) => item.value);
+  const min = Math.min(...allValues, 0) - 1;
+  const max = Math.max(...allValues) + 3;
+
+  const toPoint = (item: ChartPoint, index: number) => {
+    const x = padding.left + (chartWidth / (data.length - 1)) * index;
+    const y =
+      padding.top + chartHeight - ((item.value - min) / (max - min)) * chartHeight;
+    return { x, y };
+  };
+
+  const linePath = (items: ChartPoint[]) =>
+    items
+      .map((item, index) => {
+        const point = toPoint(item, index);
+        return `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+      })
+      .join(' ');
+
+  return (
+    <View style={styles.lineChartWrap}>
+      <Svg height={height} width="100%" viewBox={`0 0 ${width} ${height}`}>
+        {[0, 0.5, 1].map((rate) => {
+          const value = min + (max - min) * rate;
+          const y = padding.top + chartHeight - rate * chartHeight;
+          return (
+            <G key={rate}>
+              <Line
+                stroke="#E7ECF2"
+                strokeDasharray="4 6"
+                strokeWidth="1"
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={y}
+                y2={y}
+              />
+              <SvgText
+                fill="#657487"
+                fontSize="10"
+                fontWeight="700"
+                textAnchor="end"
+                x={padding.left - 8}
+                y={y + 3}
+              >
+                {`${value.toFixed(0)}%`}
+              </SvgText>
+            </G>
+          );
+        })}
+        <Path d={linePath(ipca)} fill="transparent" stroke="#6F5BD7" strokeLinecap="round" strokeWidth="2" />
+        <Path d={linePath(cdi)} fill="transparent" stroke="#0E7A4F" strokeLinecap="round" strokeWidth="2" />
+        <Path d={linePath(ibovespa)} fill="transparent" stroke="#C9821D" strokeLinecap="round" strokeWidth="3" />
+        <Path d={linePath(data)} fill="transparent" stroke="#2868E8" strokeLinecap="round" strokeWidth="4" />
+        {data.map((item, index) => {
+          const point = toPoint(item, index);
+          const showLabel = index === 0 || index === data.length - 1 || index % 2 === 1;
+
+          return (
+            <G key={item.label}>
+              <Circle cx={point.x} cy={point.y} fill="#FFFFFF" r="5" />
+              <Circle cx={point.x} cy={point.y} fill="#2868E8" r="3" />
+              {showLabel ? (
+                <SvgText
+                  fill="#657487"
+                  fontSize="10"
+                  fontWeight="700"
+                  textAnchor="middle"
+                  x={point.x}
+                  y={height - 10}
+                >
+                  {item.label}
+                </SvgText>
+              ) : null}
+            </G>
+          );
+        })}
+      </Svg>
+    </View>
+  );
+}
+
 function BarChart({
   data,
   width,
@@ -1925,6 +2180,10 @@ function parseNumber(value: string) {
 
 function formatInputNumber(value: number) {
   return String(value).replace('.', ',');
+}
+
+function lastPoint(points: ChartPoint[]) {
+  return points[points.length - 1]?.value ?? 0;
 }
 
 function isValidDateInput(value: string) {
@@ -2513,6 +2772,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
   },
+  benchmarkLegendGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    justifyContent: 'center',
+    marginTop: 8,
+  },
   dot: {
     borderRadius: 5,
     height: 10,
@@ -2808,6 +3074,35 @@ const styles = StyleSheet.create({
     color: '#172434',
     fontSize: 14,
     fontWeight: '900',
+  },
+  toggleRow: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    padding: 10,
+  },
+  toggleBox: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#CBD5E1',
+    borderRadius: 6,
+    borderWidth: 1,
+    height: 24,
+    justifyContent: 'center',
+    width: 24,
+  },
+  toggleBoxActive: {
+    backgroundColor: '#2868E8',
+    borderColor: '#2868E8',
+  },
+  toggleTextBlock: {
+    flex: 1,
+    gap: 3,
   },
   simulationNote: {
     color: '#657487',
