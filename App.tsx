@@ -8,16 +8,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
-import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 
 import { env, hasBackendConfig } from './src/config/env';
+import { ChartLegend, Field, Metric, SectionTitle } from './src/components/ui';
+import { BarChart, DonutChart, LineChart } from './src/components/charts';
 import { searchAssetCatalog } from './src/data/assetCatalog';
 import {
-  alerts,
   allocation,
   benchmarkHistory,
   dividendHistory,
@@ -27,12 +26,22 @@ import {
   positions,
   transactions as initialTransactions,
 } from './src/data/mock';
+import {
+  buildAllocationFromPositions,
+  buildPortfolioAlerts,
+  getAssistantAnswer,
+  getPositionProfit,
+  getSafetyMargin,
+} from './src/domain/analytics';
+import { calculateMonthsToGoal, calculateRealAnnualReturn } from './src/domain/goals';
 import { calculateAveragePrice, groupTransactionsByTicker } from './src/domain/portfolio';
 import { loadCloudPortfolio, saveCloudPortfolio } from './src/services/portfolioCloud';
 import { isSupabaseConfigured, supabase } from './src/services/supabase';
+import { AuthScreen } from './src/screens/AuthScreen';
+import { Benchmarks } from './src/screens/Benchmarks';
 import type {
+  AlertItem,
   AllocationSlice,
-  ChartPoint,
   Dividend,
   Position,
   Transaction,
@@ -43,6 +52,13 @@ import {
   saveStoredAssets,
   saveStoredTransactions,
 } from './src/storage/portfolioStorage';
+import {
+  formatDate,
+  formatInputNumber,
+  formatYears,
+  isValidDateInput,
+  parseNumber,
+} from './src/utils/format';
 
 type TabKey =
   | 'dashboard'
@@ -68,48 +84,6 @@ const currency = new Intl.NumberFormat(env.defaultLocale, {
   currency: env.defaultCurrency,
 });
 
-const benchmarkSeries = {
-  carteira: [
-    { label: 'Jan', value: 0 },
-    { label: 'Fev', value: 4.5 },
-    { label: 'Mar', value: 2.6 },
-    { label: 'Abr', value: 10.6 },
-    { label: 'Mai', value: 17.2 },
-    { label: 'Jun', value: 22.7 },
-    { label: 'Jul', value: 27.2 },
-    { label: 'Ago', value: 33.6 },
-  ],
-  cdi: [
-    { label: 'Jan', value: 0 },
-    { label: 'Fev', value: 0.9 },
-    { label: 'Mar', value: 1.8 },
-    { label: 'Abr', value: 2.7 },
-    { label: 'Mai', value: 3.6 },
-    { label: 'Jun', value: 4.5 },
-    { label: 'Jul', value: 5.4 },
-    { label: 'Ago', value: 6.3 },
-  ],
-  ibovespa: [
-    { label: 'Jan', value: 0 },
-    { label: 'Fev', value: 2.2 },
-    { label: 'Mar', value: -1.1 },
-    { label: 'Abr', value: 5.4 },
-    { label: 'Mai', value: 7.8 },
-    { label: 'Jun', value: 9.1 },
-    { label: 'Jul', value: 11.6 },
-    { label: 'Ago', value: 13.9 },
-  ],
-  ipca: [
-    { label: 'Jan', value: 0 },
-    { label: 'Fev', value: 0.4 },
-    { label: 'Mar', value: 0.8 },
-    { label: 'Abr', value: 1.2 },
-    { label: 'Mai', value: 1.6 },
-    { label: 'Jun', value: 2.0 },
-    { label: 'Jul', value: 2.4 },
-    { label: 'Ago', value: 2.8 },
-  ],
-};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
@@ -255,8 +229,17 @@ export default function App() {
   }, [portfolioPositions]);
 
   const portfolioAllocation = useMemo(
-    () => buildAllocationFromPositions(portfolioPositions),
+    () => buildAllocationFromPositions(portfolioPositions, allocation),
     [portfolioPositions],
+  );
+  const portfolioAlerts = useMemo(
+    () =>
+      buildPortfolioAlerts({
+        allocation: portfolioAllocation,
+        formatCurrency: (value) => currency.format(value),
+        positions: portfolioPositions,
+      }),
+    [portfolioAllocation, portfolioPositions],
   );
 
   const saveNow = () => {
@@ -369,7 +352,11 @@ export default function App() {
           showsVerticalScrollIndicator={false}
         >
           {activeTab === 'dashboard' && (
-            <Dashboard allocation={portfolioAllocation} totals={totals} />
+            <Dashboard
+              alerts={portfolioAlerts}
+              allocation={portfolioAllocation}
+              totals={totals}
+            />
           )}
           {activeTab === 'carteira' && (
             <Portfolio
@@ -394,7 +381,9 @@ export default function App() {
           {activeTab === 'dividendos' && <Dividends />}
           {activeTab === 'metas' && <Goals totals={totals} />}
           {activeTab === 'benchmarks' && <Benchmarks />}
-          {activeTab === 'radar' && <Opportunities positions={portfolioPositions} />}
+          {activeTab === 'radar' && (
+            <Opportunities alerts={portfolioAlerts} positions={portfolioPositions} />
+          )}
           {activeTab === 'ia' && (
             <Assistant
               allocation={portfolioAllocation}
@@ -427,100 +416,12 @@ function Header() {
   );
 }
 
-function AuthScreen() {
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(false);
-  const canSubmit = email.includes('@') && password.length >= 6 && !loading;
-
-  const submit = async () => {
-    if (!supabase || !canSubmit) {
-      return;
-    }
-
-    setLoading(true);
-    setMessage('');
-
-    const result =
-      mode === 'signin'
-        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
-        : await supabase.auth.signUp({ email: email.trim(), password });
-
-    setLoading(false);
-
-    if (result.error) {
-      setMessage(result.error.message);
-      return;
-    }
-
-    if (mode === 'signup' && !result.data.session) {
-      setMessage('Cadastro criado. Verifique seu email para confirmar a conta.');
-    }
-  };
-
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="dark" />
-      <View style={styles.authShell}>
-        <Text style={styles.brand}>{env.appName}</Text>
-        <Text style={styles.authTitle}>
-          {mode === 'signin' ? 'Entrar na carteira' : 'Criar conta'}
-        </Text>
-        <Text style={styles.authText}>
-          Sincronize ativos, lancamentos e carteira por usuario com Supabase.
-        </Text>
-
-        <View style={styles.formCard}>
-          <Field
-            inputMode="text"
-            label="Email"
-            onChangeText={setEmail}
-            placeholder="voce@email.com"
-            value={email}
-          />
-          <Field
-            inputMode="text"
-            label="Senha"
-            onChangeText={setPassword}
-            placeholder="minimo 6 caracteres"
-            secureTextEntry
-            value={password}
-          />
-
-          {message ? <Text style={styles.authMessage}>{message}</Text> : null}
-
-          <Pressable
-            accessibilityRole="button"
-            disabled={!canSubmit}
-            onPress={submit}
-            style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
-          >
-            <Text style={styles.primaryButtonText}>
-              {loading ? 'Aguarde...' : mode === 'signin' ? 'Entrar' : 'Cadastrar'}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setMode((current) => (current === 'signin' ? 'signup' : 'signin'))}
-            style={styles.authSwitch}
-          >
-            <Text style={styles.sectionAction}>
-              {mode === 'signin' ? 'Criar uma conta' : 'Ja tenho conta'}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-    </SafeAreaView>
-  );
-}
-
 function Dashboard({
+  alerts,
   allocation,
   totals,
 }: {
+  alerts: AlertItem[];
   allocation: AllocationSlice[];
   totals: {
     invested: number;
@@ -957,66 +858,6 @@ function Goals({
   );
 }
 
-function Benchmarks() {
-  const { width } = useWindowDimensions();
-  const chartWidth = Math.min(344, Math.max(286, width - 56));
-  const carteiraReturn = lastPoint(benchmarkSeries.carteira);
-  const cdiReturn = lastPoint(benchmarkSeries.cdi);
-  const ibovespaReturn = lastPoint(benchmarkSeries.ibovespa);
-  const ipcaReturn = lastPoint(benchmarkSeries.ipca);
-
-  return (
-    <>
-      <View style={styles.heroPanel}>
-        <View style={styles.heroTop}>
-          <View>
-            <Text style={styles.overline}>Rentabilidade acumulada</Text>
-            <Text style={styles.heroValue}>{carteiraReturn.toFixed(1)}%</Text>
-          </View>
-          <View style={styles.incomeBadge}>
-            <Text style={styles.incomeBadgeText}>
-              {(carteiraReturn - cdiReturn).toFixed(1)} p.p. vs CDI
-            </Text>
-          </View>
-        </View>
-        <View style={styles.metricGrid}>
-          <Metric label="CDI" value={`${cdiReturn.toFixed(1)}%`} />
-          <Metric label="Ibovespa" value={`${ibovespaReturn.toFixed(1)}%`} />
-          <Metric label="IPCA" value={`${ipcaReturn.toFixed(1)}%`} />
-          <Metric label="Alfa vs Ibov" value={`${(carteiraReturn - ibovespaReturn).toFixed(1)} p.p.`} />
-        </View>
-      </View>
-
-      <SectionTitle title="Comparativo" action="ano atual" />
-      <View style={styles.card}>
-        <BenchmarkChart
-          cdi={benchmarkSeries.cdi}
-          data={benchmarkSeries.carteira}
-          height={210}
-          ibovespa={benchmarkSeries.ibovespa}
-          ipca={benchmarkSeries.ipca}
-          width={chartWidth}
-        />
-        <View style={styles.benchmarkLegendGrid}>
-          <ChartLegend color="#2868E8" label="Carteira" />
-          <ChartLegend color="#0E7A4F" label="CDI" />
-          <ChartLegend color="#C9821D" label="Ibovespa" />
-          <ChartLegend color="#6F5BD7" label="IPCA" />
-        </View>
-      </View>
-
-      <SectionTitle title="Leitura rapida" />
-      <View style={styles.card}>
-        <Text style={styles.aiText}>
-          A carteira supera CDI e Ibovespa no periodo simulado. Antes de concluir que ha
-          vantagem estrutural, compare tambem volatilidade, concentracao e recorrencia dos
-          resultados.
-        </Text>
-      </View>
-    </>
-  );
-}
-
 function GoalCard({
   icon,
   label,
@@ -1051,7 +892,13 @@ function GoalCard({
   );
 }
 
-function Opportunities({ positions }: { positions: Position[] }) {
+function Opportunities({
+  alerts,
+  positions,
+}: {
+  alerts: AlertItem[];
+  positions: Position[];
+}) {
   const belowCeiling = positions.filter(
     (position) => position.ceilingPrice > 0 && position.currentPrice <= position.ceilingPrice,
   );
@@ -1062,6 +909,13 @@ function Opportunities({ positions }: { positions: Position[] }) {
   return (
     <>
       <SectionTitle title="Radar de oportunidades" action="Atualizado" />
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Alertas acionaveis</Text>
+        {alerts.slice(0, 4).map((alert) => (
+          <AlertCard key={alert.title} {...alert} />
+        ))}
+      </View>
+
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Abaixo do preco teto</Text>
         {belowCeiling.length ? (
@@ -1129,7 +983,13 @@ function Assistant({
     'Qual ativo esta acima do meu preco teto?',
   ];
   const [selectedQuestion, setSelectedQuestion] = useState(questions[0]);
-  const answer = getAssistantAnswer(selectedQuestion, positions, allocation, totals);
+  const answer = getAssistantAnswer({
+    allocation,
+    formatCurrency: (value) => currency.format(value),
+    positions,
+    question: selectedQuestion,
+    totals,
+  });
 
   if (!env.aiAssistantEnabled) {
     return (
@@ -1197,52 +1057,6 @@ function Assistant({
         </Pressable>
       ))}
     </>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  tone,
-  compact,
-}: {
-  label: string;
-  value: string;
-  tone?: 'positive';
-  compact?: boolean;
-}) {
-  return (
-    <View style={compact ? styles.metricCompact : styles.metric}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={[styles.metricValue, tone === 'positive' && styles.positiveText]}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function SectionTitle({
-  title,
-  action,
-  onActionPress,
-}: {
-  title: string;
-  action?: string;
-  onActionPress?: () => void;
-}) {
-  return (
-    <View style={styles.sectionTitle}>
-      <Text style={styles.sectionHeading}>{title}</Text>
-      {action ? (
-        <Pressable
-          accessibilityRole={onActionPress ? 'button' : undefined}
-          disabled={!onActionPress}
-          onPress={onActionPress}
-        >
-          <Text style={styles.sectionAction}>{action}</Text>
-        </Pressable>
-      ) : null}
-    </View>
   );
 }
 
@@ -1721,38 +1535,6 @@ function TransactionForm({
   );
 }
 
-function Field({
-  label,
-  value,
-  placeholder,
-  inputMode = 'decimal',
-  secureTextEntry,
-  onChangeText,
-}: {
-  label: string;
-  value: string;
-  placeholder: string;
-  inputMode?: 'decimal' | 'numeric' | 'text';
-  secureTextEntry?: boolean;
-  onChangeText: (value: string) => void;
-}) {
-  return (
-    <View style={styles.field}>
-      <Text style={styles.inputLabel}>{label}</Text>
-      <TextInput
-        inputMode={inputMode}
-        keyboardType={inputMode === 'text' ? 'default' : 'decimal-pad'}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor="#94A3B8"
-        secureTextEntry={secureTextEntry}
-        style={styles.input}
-        value={value}
-      />
-    </View>
-  );
-}
-
 function DividendRow({ item, rank }: { item: Dividend; rank: number }) {
   return (
     <View style={styles.dividendRow}>
@@ -1816,544 +1598,8 @@ function OpportunityRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DonutChart({
-  data,
-}: {
-  data: { label: string; value: number; color: string }[];
-}) {
-  const size = 156;
-  const strokeWidth = 18;
-  const radius = (size - strokeWidth) / 2;
-  const center = size / 2;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
-
-  return (
-    <View style={styles.donutWrap}>
-      <Svg height={size} width={size} viewBox={`0 0 ${size} ${size}`}>
-        <G rotation="-90" origin={`${center}, ${center}`}>
-          {data.map((item) => {
-            const dash = (item.value / 100) * circumference;
-            const segment = (
-              <Circle
-                cx={center}
-                cy={center}
-                fill="transparent"
-                key={item.label}
-                r={radius}
-                stroke={item.color}
-                strokeDasharray={`${dash} ${circumference - dash}`}
-                strokeDashoffset={-offset}
-                strokeLinecap="round"
-                strokeWidth={strokeWidth}
-              />
-            );
-            offset += dash;
-            return segment;
-          })}
-        </G>
-        <Circle cx={center} cy={center} fill="#FFFFFF" r={radius - strokeWidth / 1.4} />
-        <SvgText
-          fill="#172434"
-          fontSize="22"
-          fontWeight="900"
-          textAnchor="middle"
-          x={center}
-          y={center - 2}
-        >
-          100%
-        </SvgText>
-        <SvgText
-          fill="#657487"
-          fontSize="11"
-          fontWeight="700"
-          textAnchor="middle"
-          x={center}
-          y={center + 18}
-        >
-          alocado
-        </SvgText>
-      </Svg>
-    </View>
-  );
-}
-
-function LineChart({
-  data,
-  benchmark,
-  width,
-  height,
-}: {
-  data: { label: string; value: number }[];
-  benchmark: { label: string; value: number }[];
-  width: number;
-  height: number;
-}) {
-  const padding = { top: 18, right: 12, bottom: 34, left: 44 };
-  const chartWidth = width - padding.left - padding.right;
-  const chartHeight = height - padding.top - padding.bottom;
-  const allValues = [...data, ...benchmark].map((item) => item.value);
-  const min = Math.min(...allValues) * 0.98;
-  const max = Math.max(...allValues) * 1.02;
-
-  const toPoint = (item: { value: number }, index: number) => {
-    const x = padding.left + (chartWidth / (data.length - 1)) * index;
-    const y =
-      padding.top + chartHeight - ((item.value - min) / (max - min)) * chartHeight;
-    return { x, y };
-  };
-
-  const linePath = (items: { value: number }[]) =>
-    items
-      .map((item, index) => {
-        const point = toPoint(item, index);
-        return `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-      })
-      .join(' ');
-
-  const gridValues = [0, 1, 2].map((step) => min + ((max - min) / 2) * step);
-
-  return (
-    <View style={styles.lineChartWrap}>
-      <Svg height={height} width="100%" viewBox={`0 0 ${width} ${height}`}>
-        {gridValues.map((value) => {
-          const y = padding.top + chartHeight - ((value - min) / (max - min)) * chartHeight;
-          return (
-            <G key={value}>
-              <Line
-                stroke="#E7ECF2"
-                strokeDasharray="4 6"
-                strokeWidth="1"
-                x1={padding.left}
-                x2={width - padding.right}
-                y1={y}
-                y2={y}
-              />
-              <SvgText
-                fill="#657487"
-                fontSize="10"
-                fontWeight="700"
-                textAnchor="end"
-                x={padding.left - 8}
-                y={y + 3}
-              >
-                {`${Math.round(value / 1000)}k`}
-              </SvgText>
-            </G>
-          );
-        })}
-        <Path
-          d={linePath(benchmark)}
-          fill="transparent"
-          stroke="#C9821D"
-          strokeDasharray="5 5"
-          strokeLinecap="round"
-          strokeWidth="3"
-        />
-        <Path
-          d={linePath(data)}
-          fill="transparent"
-          stroke="#2868E8"
-          strokeLinecap="round"
-          strokeWidth="4"
-        />
-        {data.map((item, index) => {
-          const point = toPoint(item, index);
-          const showLabel = index === 0 || index === data.length - 1 || index % 2 === 1;
-
-          return (
-            <G key={item.label}>
-              <Circle cx={point.x} cy={point.y} fill="#FFFFFF" r="5" />
-              <Circle cx={point.x} cy={point.y} fill="#2868E8" r="3" />
-              {showLabel ? (
-                <SvgText
-                  fill="#657487"
-                  fontSize="10"
-                  fontWeight="700"
-                  textAnchor="middle"
-                  x={point.x}
-                  y={height - 10}
-                >
-                  {item.label}
-                </SvgText>
-              ) : null}
-            </G>
-          );
-        })}
-      </Svg>
-    </View>
-  );
-}
-
-function BenchmarkChart({
-  data,
-  cdi,
-  ibovespa,
-  ipca,
-  width,
-  height,
-}: {
-  data: ChartPoint[];
-  cdi: ChartPoint[];
-  ibovespa: ChartPoint[];
-  ipca: ChartPoint[];
-  width: number;
-  height: number;
-}) {
-  const padding = { top: 18, right: 12, bottom: 34, left: 38 };
-  const chartWidth = width - padding.left - padding.right;
-  const chartHeight = height - padding.top - padding.bottom;
-  const allValues = [...data, ...cdi, ...ibovespa, ...ipca].map((item) => item.value);
-  const min = Math.min(...allValues, 0) - 1;
-  const max = Math.max(...allValues) + 3;
-
-  const toPoint = (item: ChartPoint, index: number) => {
-    const x = padding.left + (chartWidth / (data.length - 1)) * index;
-    const y =
-      padding.top + chartHeight - ((item.value - min) / (max - min)) * chartHeight;
-    return { x, y };
-  };
-
-  const linePath = (items: ChartPoint[]) =>
-    items
-      .map((item, index) => {
-        const point = toPoint(item, index);
-        return `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-      })
-      .join(' ');
-
-  return (
-    <View style={styles.lineChartWrap}>
-      <Svg height={height} width="100%" viewBox={`0 0 ${width} ${height}`}>
-        {[0, 0.5, 1].map((rate) => {
-          const value = min + (max - min) * rate;
-          const y = padding.top + chartHeight - rate * chartHeight;
-          return (
-            <G key={rate}>
-              <Line
-                stroke="#E7ECF2"
-                strokeDasharray="4 6"
-                strokeWidth="1"
-                x1={padding.left}
-                x2={width - padding.right}
-                y1={y}
-                y2={y}
-              />
-              <SvgText
-                fill="#657487"
-                fontSize="10"
-                fontWeight="700"
-                textAnchor="end"
-                x={padding.left - 8}
-                y={y + 3}
-              >
-                {`${value.toFixed(0)}%`}
-              </SvgText>
-            </G>
-          );
-        })}
-        <Path d={linePath(ipca)} fill="transparent" stroke="#6F5BD7" strokeLinecap="round" strokeWidth="2" />
-        <Path d={linePath(cdi)} fill="transparent" stroke="#0E7A4F" strokeLinecap="round" strokeWidth="2" />
-        <Path d={linePath(ibovespa)} fill="transparent" stroke="#C9821D" strokeLinecap="round" strokeWidth="3" />
-        <Path d={linePath(data)} fill="transparent" stroke="#2868E8" strokeLinecap="round" strokeWidth="4" />
-        {data.map((item, index) => {
-          const point = toPoint(item, index);
-          const showLabel = index === 0 || index === data.length - 1 || index % 2 === 1;
-
-          return (
-            <G key={item.label}>
-              <Circle cx={point.x} cy={point.y} fill="#FFFFFF" r="5" />
-              <Circle cx={point.x} cy={point.y} fill="#2868E8" r="3" />
-              {showLabel ? (
-                <SvgText
-                  fill="#657487"
-                  fontSize="10"
-                  fontWeight="700"
-                  textAnchor="middle"
-                  x={point.x}
-                  y={height - 10}
-                >
-                  {item.label}
-                </SvgText>
-              ) : null}
-            </G>
-          );
-        })}
-      </Svg>
-    </View>
-  );
-}
-
-function BarChart({
-  data,
-  width,
-  height,
-}: {
-  data: { label: string; value: number }[];
-  width: number;
-  height: number;
-}) {
-  const padding = { top: 18, right: 10, bottom: 32, left: 40 };
-  const chartWidth = width - padding.left - padding.right;
-  const chartHeight = height - padding.top - padding.bottom;
-  const max = Math.max(...data.map((item) => item.value)) * 1.18;
-  const barGap = 8;
-  const barWidth = (chartWidth - barGap * (data.length - 1)) / data.length;
-
-  return (
-    <View style={styles.lineChartWrap}>
-      <Svg height={height} width="100%" viewBox={`0 0 ${width} ${height}`}>
-        {[0, 0.5, 1].map((rate) => {
-          const y = padding.top + chartHeight - rate * chartHeight;
-          return (
-            <G key={rate}>
-              <Line
-                stroke="#E7ECF2"
-                strokeDasharray="4 6"
-                strokeWidth="1"
-                x1={padding.left}
-                x2={width - padding.right}
-                y1={y}
-                y2={y}
-              />
-              <SvgText
-                fill="#657487"
-                fontSize="10"
-                fontWeight="700"
-                textAnchor="end"
-                x={padding.left - 8}
-                y={y + 3}
-              >
-                {Math.round((max * rate) / 100) * 100}
-              </SvgText>
-            </G>
-          );
-        })}
-        {data.map((item, index) => {
-          const barHeight = (item.value / max) * chartHeight;
-          const x = padding.left + index * (barWidth + barGap);
-          const y = padding.top + chartHeight - barHeight;
-          const selected = index === data.length - 1;
-
-          return (
-            <G key={item.label}>
-              <Rect
-                fill={selected ? '#0E7A4F' : '#8FB7A3'}
-                height={barHeight}
-                rx="5"
-                width={barWidth}
-                x={x}
-                y={y}
-              />
-              <SvgText
-                fill="#657487"
-                fontSize="10"
-                fontWeight="700"
-                textAnchor="middle"
-                x={x + barWidth / 2}
-                y={height - 10}
-              >
-                {item.label}
-              </SvgText>
-            </G>
-          );
-        })}
-      </Svg>
-    </View>
-  );
-}
-
-function ChartLegend({ color, label }: { color: string; label: string }) {
-  return (
-    <View style={styles.chartLegend}>
-      <View style={[styles.dot, { backgroundColor: color }]} />
-      <Text style={styles.muted}>{label}</Text>
-    </View>
-  );
-}
-
-function parseNumber(value: string) {
-  const normalized = value.replace(',', '.').trim();
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function formatInputNumber(value: number) {
-  return String(value).replace('.', ',');
-}
-
-function lastPoint(points: ChartPoint[]) {
-  return points[points.length - 1]?.value ?? 0;
-}
-
-function isValidDateInput(value: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return false;
-  }
-
-  const parsed = new Date(`${value}T00:00:00`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
-
-function formatDate(value: string) {
-  const [year, month, day] = value.split('-');
-  return `${day}/${month}/${year}`;
-}
-
 function formatOptionalCurrency(value: number) {
   return value > 0 ? currency.format(value) : 'Nao definido';
-}
-
-function formatYears(months: number) {
-  if (!months) {
-    return 'Sem aporte';
-  }
-
-  if (months === Infinity) {
-    return 'Nao atinge com estes parametros';
-  }
-
-  const years = Math.floor(months / 12);
-  const remainingMonths = months % 12;
-
-  if (!years) {
-    return `${remainingMonths} meses`;
-  }
-
-  if (!remainingMonths) {
-    return `${years} anos`;
-  }
-
-  return `${years} anos e ${remainingMonths} meses`;
-}
-
-function calculateRealAnnualReturn(nominalAnnualReturn: number, annualInflation: number) {
-  const nominal = nominalAnnualReturn / 100;
-  const inflation = annualInflation / 100;
-  return ((1 + nominal) / (1 + inflation) - 1) * 100;
-}
-
-function calculateMonthsToGoal({
-  currentValue,
-  monthlyContribution,
-  targetValue,
-  annualRealReturn,
-}: {
-  currentValue: number;
-  monthlyContribution: number;
-  targetValue: number;
-  annualRealReturn: number;
-}) {
-  if (currentValue >= targetValue) {
-    return 0;
-  }
-
-  const monthlyRate = Math.pow(1 + annualRealReturn / 100, 1 / 12) - 1;
-  let value = currentValue;
-
-  for (let month = 1; month <= 1200; month += 1) {
-    value = value * (1 + monthlyRate) + monthlyContribution;
-
-    if (value >= targetValue) {
-      return month;
-    }
-  }
-
-  return Infinity;
-}
-
-function getSafetyMargin(position: Position) {
-  if (!position.fairPrice) {
-    return 'Nao se aplica';
-  }
-
-  const margin = ((position.fairPrice - position.currentPrice) / position.fairPrice) * 100;
-  return `${margin.toFixed(1)}%`;
-}
-
-function getPositionProfit(position: Position) {
-  return position.quantity * (position.currentPrice - position.averagePrice);
-}
-
-function buildAllocationFromPositions(positions: Position[]): AllocationSlice[] {
-  const colors: Record<string, string> = {
-    Acao: '#2868E8',
-    FII: '#C9821D',
-    ETF: '#6F5BD7',
-    'Renda fixa': '#2F6F73',
-  };
-  const values = positions.reduce<Record<string, number>>((groups, position) => {
-    const current = position.quantity * position.currentPrice;
-    groups[position.type] = (groups[position.type] || 0) + current;
-    return groups;
-  }, {});
-  const total = Object.values(values).reduce((sum, value) => sum + value, 0);
-
-  if (!total) {
-    return allocation;
-  }
-
-  return Object.entries(values)
-    .filter(([, value]) => value > 0)
-    .map(([label, value]) => ({
-      label,
-      value: Math.round((value / total) * 100),
-      color: colors[label] || '#6C7A89',
-    }));
-}
-
-function getAssistantAnswer(
-  question: string,
-  positions: Position[],
-  allocation: AllocationSlice[],
-  totals: {
-    invested: number;
-    current: number;
-    dividendsTotal: number;
-    profit: number;
-    performance: number;
-  },
-) {
-  const positionedAssets = positions.filter((position) => position.quantity > 0);
-  const topAllocation = [...allocation].sort((a, b) => b.value - a.value)[0];
-  const bestAsset = [...positionedAssets].sort(
-    (a, b) => getPositionProfit(b) - getPositionProfit(a),
-  )[0];
-  const aboveCeiling = positionedAssets.filter(
-    (position) => position.ceilingPrice > 0 && position.currentPrice > position.ceilingPrice,
-  );
-
-  if (question.includes('puxaram')) {
-    if (!bestAsset) {
-      return 'Ainda nao ha posicoes suficientes para identificar os principais motores de rentabilidade.';
-    }
-
-    return `${bestAsset.ticker} e o ativo que mais contribui no momento, com resultado aproximado de ${currency.format(
-      getPositionProfit(bestAsset),
-    )}. Use isso como leitura da carteira, nao como recomendacao de compra ou venda.`;
-  }
-
-  if (question.includes('dividendos')) {
-    return `Neste mes, os dividendos registrados somam ${currency.format(
-      totals.dividendsTotal,
-    )}. Acompanhe tambem a recorrencia por setor e por ativo antes de projetar renda futura.`;
-  }
-
-  if (question.includes('preco teto')) {
-    if (!aboveCeiling.length) {
-      return 'Nenhum ativo com posicao esta acima do preco teto configurado. Ainda assim, revise os fundamentos antes de qualquer decisao.';
-    }
-
-    return `${aboveCeiling
-      .map((position) => position.ticker)
-      .join(', ')} esta acima do preco teto configurado. Isso sugere revisar premissas e fundamentos antes de novos aportes.`;
-  }
-
-  return `Sua carteira vale ${currency.format(totals.current)}, com resultado de ${currency.format(
-    totals.profit,
-  )} (${totals.performance.toFixed(1)}%). A maior alocacao esta em ${
-    topAllocation?.label ?? 'classe indefinida'
-  } (${topAllocation?.value ?? 0}%).`;
 }
 
 const styles = StyleSheet.create({
@@ -2749,16 +1995,6 @@ const styles = StyleSheet.create({
   },
   legendList: {
     alignSelf: 'stretch',
-  },
-  donutWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 162,
-  },
-  lineChartWrap: {
-    alignItems: 'center',
-    minHeight: 188,
-    overflow: 'hidden',
   },
   chartLegendRow: {
     alignItems: 'center',
