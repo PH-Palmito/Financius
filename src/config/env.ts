@@ -6,6 +6,8 @@ const publicEnv = {
   supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
   supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
   newsApiBaseUrl: process.env.EXPO_PUBLIC_NEWS_API_BASE_URL || '',
+  marketDataProvider: process.env.EXPO_PUBLIC_MARKET_DATA_PROVIDER || 'mock',
+  marketDataApiBaseUrl: process.env.EXPO_PUBLIC_MARKET_DATA_API_BASE_URL || '',
   aiAssistantEnabled: process.env.EXPO_PUBLIC_AI_ASSISTANT_ENABLED !== 'false',
   defaultLocale: process.env.EXPO_PUBLIC_DEFAULT_LOCALE || 'pt-BR',
   defaultCurrency: process.env.EXPO_PUBLIC_DEFAULT_CURRENCY || 'BRL',

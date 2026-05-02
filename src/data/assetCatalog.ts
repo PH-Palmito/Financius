@@ -60,6 +60,42 @@ export const assetCatalog: AssetCatalogItem[] = [
     ceilingPrice: 0,
     fairPrice: 0,
   },
+  {
+    ticker: 'BOVA11',
+    name: 'ETF Ibovespa',
+    type: 'ETF',
+    sector: 'Brasil amplo',
+    currentPrice: 132.85,
+    ceilingPrice: 0,
+    fairPrice: 0,
+  },
+  {
+    ticker: 'HGLG11',
+    name: 'CSHG Logistica FII',
+    type: 'FII',
+    sector: 'Logistica',
+    currentPrice: 161.2,
+    ceilingPrice: 154.0,
+    fairPrice: 170.0,
+  },
+  {
+    ticker: 'ITUB4',
+    name: 'Itau Unibanco PN',
+    type: 'Acao',
+    sector: 'Financeiro',
+    currentPrice: 34.18,
+    ceilingPrice: 31.5,
+    fairPrice: 38.0,
+  },
+  {
+    ticker: 'CDB100',
+    name: 'CDB 100% CDI',
+    type: 'Renda fixa',
+    sector: 'Pos-fixado',
+    currentPrice: 1,
+    ceilingPrice: 0,
+    fairPrice: 0,
+  },
 ];
 
 export function searchAssetCatalog(query: string) {

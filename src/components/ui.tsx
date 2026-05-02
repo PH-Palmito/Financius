@@ -1,4 +1,7 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+
+import type { AlertItem } from '../domain/types';
 
 export function Metric({
   label,
@@ -87,6 +90,20 @@ export function ChartLegend({ color, label }: { color: string; label: string }) 
   );
 }
 
+export function AlertCard({ icon, title, text }: AlertItem) {
+  return (
+    <View style={styles.alertCard}>
+      <View style={styles.alertIcon}>
+        <Ionicons color="#9A5A04" name={icon} size={20} />
+      </View>
+      <View style={styles.alertTextBlock}>
+        <Text style={styles.rowTitle}>{title}</Text>
+        <Text style={styles.muted}>{text}</Text>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   metric: {
     backgroundColor: '#F5F7FA',
@@ -164,5 +181,33 @@ const styles = StyleSheet.create({
     color: '#657487',
     fontSize: 13,
     lineHeight: 18,
+  },
+  rowTitle: {
+    color: '#172434',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  alertCard: {
+    alignItems: 'flex-start',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E1E8F0',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 10,
+    padding: 14,
+  },
+  alertIcon: {
+    alignItems: 'center',
+    backgroundColor: '#FFF4DF',
+    borderRadius: 8,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  alertTextBlock: {
+    flex: 1,
+    gap: 4,
   },
 });
